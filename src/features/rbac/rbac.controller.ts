@@ -417,3 +417,52 @@ export async function deleteUser(id: number, scope: Scope, companyId: number | n
   }
   await prisma.user.delete({ where: { id } });
 }
+
+// ─────────────────────────────────────────────
+//  SUPER ADMIN — "Barcha foydalanuvchilar" ro'yxatidan istalgan userni o'chirish.
+//  Qoida: foydalanuvchi biror kompaniyaga tegishli bo'lsa (ega yoki a'zo), uni
+//  to'g'ridan-to'g'ri o'chirib bo'lmaydi — avval kompaniya o'chirilishi kerak.
+//  `cascadeCompany=true` bilan kompaniya (va uning BARCHA ma'lumotlari) hamda
+//  foydalanuvchi bitta tranzaksiyada birga o'chiriladi.
+// ─────────────────────────────────────────────
+export async function deleteAnyUser(
+  id: number,
+  opts: { cascadeCompany?: boolean },
+  actingUserId: number,
+) {
+  const user = await prisma.user.findUnique({
+    where: { id },
+    include: { company: { select: { id: true, name: true } } },
+  });
+  if (!user) throw new NotFound({ detail: 'Foydalanuvchi topilmadi.' });
+  if (user.isSuperuser) {
+    throw new BadRequest({ detail: "Super adminni o'chirib bo'lmaydi." });
+  }
+  if (user.id === actingUserId) {
+    throw new BadRequest({ detail: "O'zingizni o'chira olmaysiz." });
+  }
+
+  // Foydalanuvchi EGA bo'lgan kompaniya (ownerId) yoki A'ZO bo'lgan kompaniya.
+  const ownedCompany = await prisma.company.findFirst({
+    where: { ownerId: id },
+    select: { id: true, name: true },
+  });
+  const linkedCompany = ownedCompany ?? user.company;
+
+  if (linkedCompany) {
+    if (!opts.cascadeCompany) {
+      throw new BadRequest({
+        detail: `Bu foydalanuvchi "${linkedCompany.name}" kompaniyasiga tegishli. Avval kompaniyani o'chiring.`,
+      });
+    }
+    // Kompaniyani o'chirsak: a'zolarning companyId→null, CRM/rollar/obunalar cascade
+    // o'chadi; so'ng foydalanuvchining o'zini o'chiramiz.
+    await prisma.$transaction(async (tx) => {
+      await tx.company.delete({ where: { id: linkedCompany.id } });
+      await tx.user.delete({ where: { id } });
+    });
+    return;
+  }
+
+  await prisma.user.delete({ where: { id } });
+}

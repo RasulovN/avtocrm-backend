@@ -21,6 +21,7 @@ import {
   createUser,
   updateUser,
   deleteUser,
+  deleteAnyUser,
 } from './rbac.controller.js';
 
 // Super admin tekshiruvi: isSuperuser YOKI platform.roles.manage ruxsati bo'lsa.
@@ -218,6 +219,19 @@ export async function rbacRoutes(app: FastifyInstance) {
       const companyId = q.company_id ? Number(q.company_id) : undefined;
       const { results, count } = await listAllUsers({ search: q.search, company_id: companyId }, page);
       return paginate(req, results, count, page);
+    },
+  );
+
+  // Super admin: barcha foydalanuvchilar ro'yxatidan istalgan userni o'chirish.
+  // `?cascade_company=true` — kompaniyaga tegishli bo'lsa, kompaniya bilan birga o'chiradi.
+  app.delete(
+    '/all-users/:id/',
+    { onRequest: [app.authenticate, app.requirePermission('platform.users.manage')] },
+    async (req, reply) => {
+      const q = req.query as Record<string, string | undefined>;
+      const cascadeCompany = q.cascade_company === 'true' || q.cascade_company === '1';
+      await deleteAnyUser(idParam(req), { cascadeCompany }, req.authUser!.id);
+      return reply.status(204).send();
     },
   );
 

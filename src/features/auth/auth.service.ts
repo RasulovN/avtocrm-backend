@@ -3,6 +3,7 @@ import type { Company, User } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { hashPassword } from '../../common/password.js';
 import { sendMail } from '../../common/email.js';
+import { verificationEmail } from '../../common/emailTemplates.js';
 import { env } from '../../config/env.js';
 import {
   PERMISSIONS,
@@ -29,15 +30,13 @@ export async function issueEmailVerification(user: { id: number; email: string }
   });
 
   const link = `${env.FRONTEND_URL}/verify-email?token=${token}`;
+  const hours = Math.round(env.EMAIL_VERIFICATION_TTL / 3600);
+  const { html, text } = verificationEmail({ link, hours });
   await sendMail({
     to: user.email,
     subject: 'Email manzilingizni tasdiqlang',
-    text: `Email manzilingizni tasdiqlash uchun quyidagi havolaga o'ting:\n${link}\n\nHavola ${Math.round(
-      env.EMAIL_VERIFICATION_TTL / 3600,
-    )} soat amal qiladi.`,
-    html: `<p>Email manzilingizni tasdiqlash uchun quyidagi havolaga o'ting:</p>
-<p><a href="${link}">${link}</a></p>
-<p>Havola ${Math.round(env.EMAIL_VERIFICATION_TTL / 3600)} soat amal qiladi.</p>`,
+    text,
+    html,
   });
 }
 
