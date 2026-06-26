@@ -8,10 +8,19 @@ function required(name: string, fallback?: string): string {
   return value;
 }
 
+const NODE_ENV = process.env.NODE_ENV ?? 'development';
+
+// HOST default rejimga bog'liq:
+//  - production: 127.0.0.1 — faqat localhost. Backend reverse-proxy (nginx) orqasida
+//    turadi, shuning uchun public portda (0.0.0.0) ochiq bo'lishi shart emas va xavfli.
+//  - development: 0.0.0.0 — LAN'dagi qurilmalardan ham test qilish qulay.
+// .env'da HOST aniq berilsa, o'sha ustun bo'ladi.
+const defaultHost = NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0';
+
 export const env = {
-  NODE_ENV: process.env.NODE_ENV ?? 'development',
+  NODE_ENV,
   PORT: Number(process.env.PORT ?? 8000),
-  HOST: process.env.HOST ?? '0.0.0.0',
+  HOST: process.env.HOST ?? defaultHost,
 
   SECRET_KEY: required('SECRET_KEY', 'change-me-in-production'),
   ACCESS_TOKEN_TTL: Number(process.env.ACCESS_TOKEN_TTL ?? 60 * 60 * 24), // 1 day
