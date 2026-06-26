@@ -1,0 +1,46 @@
+import type { FastifyInstance } from 'fastify';
+import { getCompanyId } from '../../common/tenant.js';
+import { payDebtSchema } from './debts.schemas.js';
+import { listCustomerDebts, getCustomerDebt, payDebt } from './debts.service.js';
+
+// apps/debts/urls.py:
+//   path('list/',      PayDebtListAPIView)    -> GET    /debts/list/
+//   path('create/',    PayDebtAPIView)        -> POST   /debts/create/
+//   path('<int:pk>/',  PayDebtDetailAPIView)  -> GET    /debts/<pk>/
+// Prefix `/debts` index.ts'da. Multi-tenant: companyId bo'yicha scope + RBAC guard.
+export async function debtsRoutes(app: FastifyInstance) {
+  // CustomerDebt ro'yxati.
+  app.get(
+    '/list/',
+    { onRequest: [app.requireCompany, app.requirePermission('company.debts.view')] },
+    async (req) => {
+      return listCustomerDebts(getCompanyId(req));
+    },
+  );
+
+  // Qarzni to'lash. Response 201: { message, payment_id, amount }.
+  app.post(
+    '/create/',
+    { onRequest: [app.requireCompany, app.requirePermission('company.debts.create')] },
+    async (req, reply) => {
+      const companyId = getCompanyId(req);
+      const data = payDebtSchema.parse(req.body);
+      const payment = await payDebt(companyId, data);
+      return reply.status(201).send({
+        message: 'Debt paid successfully',
+        payment_id: payment.id,
+        amount: payment.amount.toFixed(2),
+      });
+    },
+  );
+
+  // ID orqali qarz ma'lumoti.
+  app.get(
+    '/:pk/',
+    { onRequest: [app.requireCompany, app.requirePermission('company.debts.view')] },
+    async (req) => {
+      const pk = Number((req.params as { pk: string }).pk);
+      return getCustomerDebt(getCompanyId(req), pk);
+    },
+  );
+}

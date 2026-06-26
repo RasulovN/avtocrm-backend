@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.log
+assets/media/*
+!assets/media/.gitkeep
+.DS_Store

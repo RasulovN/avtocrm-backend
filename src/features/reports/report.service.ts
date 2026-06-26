@@ -1,0 +1,404 @@
+import { Prisma } from '@prisma/client';
+import { prisma } from '../../db/prisma.js';
+import { ValidationError } from '../../common/errors.js';
+import { dateFromISO, localDate, addDays, endOfDay } from './dateFilters.js';
+import {
+  SALE_STATUS,
+  dec,
+  num,
+  getBaseSales,
+  getSummary,
+} from './summary.service.js';
+
+// ─────────────────────────────────────────────
+//  Report facade — Django apps/reports/services/report_service.py
+//  ReportFilterService, BranchService, CategoryStatisticsService,
+//  TopProductsService, PaymentStructureService, DebtService, ReportService.
+// ─────────────────────────────────────────────
+
+const TOP_PRODUCTS_LIMIT = 5;
+
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  cash: 'Naqd',
+  card: 'Karta',
+  debt: 'Qarz',
+};
+
+const D0 = new Prisma.Decimal(0);
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+// ── ReportFilterService.resolve_store ──
+//   store_id null/'all' -> null (barcha do'kon)
+//   noto'g'ri qiymat -> ValidationError({store_id})
+//   do'kon topilmasa -> ValidationError({store_id})
+export async function resolveStore(storeId: string | undefined): Promise<number | null> {
+  if (!storeId || storeId === 'all') return null;
+  const sid = Number(storeId);
+  if (!Number.isInteger(sid)) {
+    throw new ValidationError({ store_id: "Noto'g'ri qiymat." });
+  }
+  const exists = await prisma.store.findUnique({ where: { id: sid }, select: { id: true } });
+  if (!exists) {
+    throw new ValidationError({ store_id: "Do'kon topilmadi." });
+  }
+  return sid;
+}
+
+// ── ReportFilterService.resolve_dates ──
+//   from/to berilsa -> [from, to] (ISO YYYY-MM-DD)
+//   aks holda filter_type bo'yicha:
+//     weekly -> joriy haftaning Dushanbasi .. bugun
+//     yearly -> bugun-365 .. bugun
+//     default(monthly) -> bugun-30 .. bugun
+// Qaytariladigan qiymatlar — kun chegaralari (Django created_at__date__gte/lte ekvivalenti
+// uchun [from 00:00, to 23:59:59.999]).
+export function resolveDates(
+  filterType: string | undefined,
+  fromRaw: string | undefined,
+  toRaw: string | undefined,
+): { dateFrom: Date; dateTo: Date } {
+  if (fromRaw && toRaw) {
+    const from = dateFromISO(fromRaw);
+    const to = dateFromISO(toRaw);
+    return { dateFrom: from, dateTo: endOfDay(to) };
+  }
+
+  const today = localDate();
+  if (filterType === 'weekly') {
+    const isoWeekday = (today.getDay() + 6) % 7; // 0=Dushanba
+    return { dateFrom: addDays(today, -isoWeekday), dateTo: endOfDay(today) };
+  }
+  if (filterType === 'yearly') {
+    return { dateFrom: addDays(today, -365), dateTo: endOfDay(today) };
+  }
+  // default monthly
+  return { dateFrom: addDays(today, -30), dateTo: endOfDay(today) };
+}
+
+// ── BranchService.get ──
+// Har do'kon: revenue=Σ(total_amount-refunded), orders=count, customers=distinct(customer)
+// revenue bo'yicha kamayish tartibi.
+export async function getBranchStatistics(
+  dateFrom: Date,
+  dateTo: Date,
+  storeId: number | null,
+) {
+  const sales = await getBaseSales(dateFrom, dateTo, storeId);
+
+  interface Acc {
+    storeId: number;
+    storeName: string;
+    revenue: Prisma.Decimal;
+    orders: number;
+    customers: Set<number>;
+  }
+  const map = new Map<number, Acc>();
+  for (const s of sales) {
+    let acc = map.get(s.storeId);
+    if (!acc) {
+      acc = { storeId: s.storeId, storeName: s.storeName, revenue: D0, orders: 0, customers: new Set() };
+      map.set(s.storeId, acc);
+    }
+    acc.revenue = acc.revenue.add(s.totalAmount.sub(s.refunded));
+    acc.orders += 1;
+    if (s.customerId !== null) acc.customers.add(s.customerId);
+  }
+
+  const rows = [...map.values()].map((a) => ({
+    store_id: a.storeId,
+    store__name: a.storeName,
+    revenue: num(a.revenue),
+    orders: a.orders,
+    customers: a.customers.size,
+    _rev: a.revenue,
+  }));
+  rows.sort((a, b) => b._rev.cmp(a._rev));
+  return rows.map(({ _rev, ...r }) => r);
+}
+
+// ── CategoryStatisticsService.get ──
+// SaleItem (status paid/partial) -> product.category.name bo'yicha revenue=Σ(total_price)
+// percent = revenue / total * 100 (1 kasr). revenue bo'yicha kamayish.
+export async function getCategoryStatistics(
+  dateFrom: Date,
+  dateTo: Date,
+  storeId: number | null,
+) {
+  const items = await prisma.saleItem.findMany({
+    where: {
+      sale: {
+        createdAt: { gte: dateFrom, lte: dateTo },
+        status: { in: [SALE_STATUS.PAID, SALE_STATUS.PARTIAL] },
+        ...(storeId !== null ? { storeId } : {}),
+      },
+    },
+    select: {
+      totalPrice: true,
+      product: { select: { category: { select: { name: true } } } },
+    },
+  });
+
+  const map = new Map<string | null, Prisma.Decimal>();
+  for (const it of items) {
+    const name = it.product.category?.name ?? null;
+    map.set(name, (map.get(name) ?? D0).add(dec(it.totalPrice)));
+  }
+
+  let total = D0;
+  for (const v of map.values()) total = total.add(v);
+  if (total.isZero()) total = new Prisma.Decimal(1);
+
+  const rows = [...map.entries()].map(([name, revenue]) => ({
+    categoryName: name ?? "Noma'lum",
+    revenue: num(revenue),
+    percent: round1(revenue.div(total).mul(100).toNumber()),
+    _rev: revenue,
+  }));
+  rows.sort((a, b) => b._rev.cmp(a._rev));
+  return rows.map(({ _rev, ...r }) => r);
+}
+
+// ── TopProductsService.get (report) ──
+// SaleItem -> product(+category) bo'yicha totalSold=Σquantity, totalRevenue=Σtotal_price
+// totalSold bo'yicha kamayish, TOP 5; rank 1..N.
+export async function getTopSellingProducts(
+  dateFrom: Date,
+  dateTo: Date,
+  storeId: number | null,
+) {
+  const grouped = await prisma.saleItem.groupBy({
+    by: ['productId'],
+    where: {
+      sale: {
+        createdAt: { gte: dateFrom, lte: dateTo },
+        ...(storeId !== null ? { storeId } : {}),
+      },
+    },
+    _sum: { quantity: true, totalPrice: true },
+    orderBy: { _sum: { quantity: 'desc' } },
+    take: TOP_PRODUCTS_LIMIT,
+  });
+
+  const productIds = grouped.map((g) => g.productId);
+  const products = await prisma.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true, name: true, category: { select: { name: true } } },
+  });
+  const pmap = new Map(products.map((p) => [p.id, p]));
+
+  return grouped.map((g, i) => {
+    const p = pmap.get(g.productId);
+    return {
+      rank: i + 1,
+      productId: g.productId,
+      name: p?.name ?? null,
+      category: p?.category?.name ?? "Noma'lum",
+      totalSold: g._sum.quantity ?? 0,
+      totalRevenue: num(g._sum.totalPrice ?? D0),
+    };
+  });
+}
+
+// ── PaymentStructureService.get ──
+// Payment (sale.storeId filtri) -> type bo'yicha count, amount.
+// 'debt' type Payment'dan chiqarib tashlanadi; qarz Sale.status='debt' orqali qo'shiladi.
+// percent = amount / total_amount * 100 (1 kasr) + '%'.
+export async function getPaymentStructure(
+  dateFrom: Date,
+  dateTo: Date,
+  storeId: number | null,
+) {
+  const grouped = await prisma.payment.groupBy({
+    by: ['type'],
+    where: {
+      createdAt: { gte: dateFrom, lte: dateTo },
+      ...(storeId !== null ? { sale: { storeId } } : {}),
+    },
+    _count: { _all: true },
+    _sum: { amount: true },
+    orderBy: { _sum: { amount: 'desc' } },
+  });
+
+  let totalAmount = D0;
+  for (const r of grouped) totalAmount = totalAmount.add(dec(r._sum.amount));
+  if (totalAmount.isZero()) totalAmount = new Prisma.Decimal(1);
+
+  // Qarz — Sale.status='debt' orqali
+  const debtSales = await prisma.sale.aggregate({
+    where: {
+      createdAt: { gte: dateFrom, lte: dateTo },
+      status: SALE_STATUS.DEBT,
+      ...(storeId !== null ? { storeId } : {}),
+    },
+    _count: { _all: true },
+  });
+  const debtSaleRows = await prisma.sale.findMany({
+    where: {
+      createdAt: { gte: dateFrom, lte: dateTo },
+      status: SALE_STATUS.DEBT,
+      ...(storeId !== null ? { storeId } : {}),
+    },
+    select: { totalAmount: true, paidAmount: true },
+  });
+  let debtAmount = D0;
+  for (const s of debtSaleRows) debtAmount = debtAmount.add(dec(s.totalAmount).sub(dec(s.paidAmount)));
+
+  const result: Array<{ method: string; count: number; amount: number; percent: string }> = [];
+
+  for (const r of grouped) {
+    if (r.type === 'debt') continue; // Sale orqali alohida
+    const amount = dec(r._sum.amount);
+    result.push({
+      method: PAYMENT_METHOD_LABELS[r.type] ?? r.type,
+      count: r._count._all,
+      amount: num(amount),
+      percent: `${round1(amount.div(totalAmount).mul(100).toNumber())}%`,
+    });
+  }
+
+  if (!debtAmount.isZero()) {
+    result.push({
+      method: 'Qarz',
+      count: debtSales._count._all,
+      amount: num(debtAmount),
+      percent: `${round1(debtAmount.div(totalAmount).mul(100).toNumber())}%`,
+    });
+  }
+
+  return result;
+}
+
+// ── DebtService.customer_debts ──
+// CustomerDebt (sale.storeId filtri) -> customer bo'yicha inc(type='i') - dec(type='d')
+// faqat musbat qarzlar.
+export async function getCustomerDebts(storeId: number | null) {
+  const rows = await prisma.customerDebt.findMany({
+    where: { ...(storeId !== null ? { sale: { storeId } } : {}) },
+    select: {
+      amount: true,
+      type: true,
+      customer: { select: { fullName: true, phoneNumber: true } },
+    },
+  });
+
+  interface Acc {
+    customerName: string;
+    phone: string;
+    inc: Prisma.Decimal;
+    dec: Prisma.Decimal;
+  }
+  const map = new Map<string, Acc>();
+  for (const r of rows) {
+    const key = `${r.customer.fullName} ${r.customer.phoneNumber}`;
+    let acc = map.get(key);
+    if (!acc) {
+      acc = { customerName: r.customer.fullName, phone: r.customer.phoneNumber, inc: D0, dec: D0 };
+      map.set(key, acc);
+    }
+    if (r.type === 'i') acc.inc = acc.inc.add(dec(r.amount));
+    else if (r.type === 'd') acc.dec = acc.dec.add(dec(r.amount));
+  }
+
+  const out: Array<{ customerName: string; phone: string; debt: number }> = [];
+  for (const a of map.values()) {
+    const debt = a.inc.sub(a.dec);
+    if (debt.gt(0)) {
+      out.push({ customerName: a.customerName, phone: a.phone, debt: num(debt) });
+    }
+  }
+  return out;
+}
+
+// ── DebtService.supplier_debts ──
+// SupplierTransaction (entry.storeId filtri) -> supplier bo'yicha
+// inc(type='in') - dec(type='pay'); faqat musbat qarzlar.
+export async function getSupplierDebts(storeId: number | null) {
+  const rows = await prisma.supplierTransaction.findMany({
+    where: { ...(storeId !== null ? { entry: { storeId } } : {}) },
+    select: {
+      amount: true,
+      type: true,
+      supplier: { select: { name: true } },
+    },
+  });
+
+  interface Acc {
+    supplierName: string;
+    inc: Prisma.Decimal;
+    dec: Prisma.Decimal;
+  }
+  const map = new Map<string, Acc>();
+  for (const r of rows) {
+    const key = r.supplier.name;
+    let acc = map.get(key);
+    if (!acc) {
+      acc = { supplierName: r.supplier.name, inc: D0, dec: D0 };
+      map.set(key, acc);
+    }
+    if (r.type === 'in') acc.inc = acc.inc.add(dec(r.amount));
+    else if (r.type === 'pay') acc.dec = acc.dec.add(dec(r.amount));
+  }
+
+  const out: Array<{ supplierName: string; debt: number }> = [];
+  for (const a of map.values()) {
+    const debt = a.inc.sub(a.dec);
+    if (debt.gt(0)) {
+      out.push({ supplierName: a.supplierName, debt: num(debt) });
+    }
+  }
+  return out;
+}
+
+// ── ReportService.get facade ──
+export interface ReportData {
+  summary: Awaited<ReturnType<typeof getSummary>>;
+  branchStatistics: Awaited<ReturnType<typeof getBranchStatistics>>;
+  categoryStatistics: Awaited<ReturnType<typeof getCategoryStatistics>>;
+  topSellingProducts: Awaited<ReturnType<typeof getTopSellingProducts>>;
+  paymentStructure: Awaited<ReturnType<typeof getPaymentStructure>>;
+  debts: {
+    customerDebts: Awaited<ReturnType<typeof getCustomerDebts>>;
+    supplierDebts: Awaited<ReturnType<typeof getSupplierDebts>>;
+  };
+}
+
+export async function getReport(params: {
+  store_id?: string;
+  filter?: string;
+  from?: string;
+  to?: string;
+}): Promise<ReportData> {
+  const storeId = await resolveStore(params.store_id);
+  const filterType = params.filter ?? 'monthly';
+  const { dateFrom, dateTo } = resolveDates(filterType, params.from, params.to);
+
+  const [
+    summary,
+    branchStatistics,
+    categoryStatistics,
+    topSellingProducts,
+    paymentStructure,
+    customerDebts,
+    supplierDebts,
+  ] = await Promise.all([
+    getSummary(dateFrom, dateTo, storeId),
+    getBranchStatistics(dateFrom, dateTo, storeId),
+    getCategoryStatistics(dateFrom, dateTo, storeId),
+    getTopSellingProducts(dateFrom, dateTo, storeId),
+    getPaymentStructure(dateFrom, dateTo, storeId),
+    getCustomerDebts(storeId),
+    getSupplierDebts(storeId),
+  ]);
+
+  return {
+    summary,
+    branchStatistics,
+    categoryStatistics,
+    topSellingProducts,
+    paymentStructure,
+    debts: { customerDebts, supplierDebts },
+  };
+}

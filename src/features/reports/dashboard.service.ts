@@ -1,0 +1,191 @@
+import { Prisma } from '@prisma/client';
+import { prisma } from '../../db/prisma.js';
+import { resolveDashboardRange, type DashboardDateRange } from './dateFilters.js';
+import { buildChart } from './chart.service.js';
+
+// ─────────────────────────────────────────────
+//  Dashboard service — Django apps/reports/services/dashboard_service.py
+//  DashboardAPIView uchun: kpi, topParts, lowStock, recentSales, chart.
+// ─────────────────────────────────────────────
+
+const LOW_STOCK_THRESHOLD = 5;
+const RECENT_SALES_LIMIT = 1;
+const TOP_PARTS_LIMIT = 5;
+const LOW_STOCK_LIMIT = 3;
+
+const D0 = new Prisma.Decimal(0);
+
+// Decimal -> number (DRF JSON encoder Decimal'ni son sifatida chiqaradi).
+function num(value: Prisma.Decimal | number | null | undefined): number {
+  if (value === null || value === undefined) return 0;
+  if (value instanceof Prisma.Decimal) return value.toNumber();
+  return value;
+}
+
+// _apply_store_filter: store_id='all'/null -> filter yo'q, aks holda storeId tengligi.
+function storeFilter(storeId: string | undefined): { storeId?: number } {
+  if (storeId && storeId !== 'all') {
+    return { storeId: Number(storeId) };
+  }
+  return {};
+}
+
+// _growth: ((cur - prev) / prev) * 100; prev=0 -> cur>0 ? 100.0 : 0.0; 1 kasrgacha.
+function growth(current: number, previous: number): number {
+  if (!previous) {
+    return current ? 100.0 : 0.0;
+  }
+  return round1(((current - previous) / previous) * 100);
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+// ── KPIService.get ──
+// 2 ta sales aggregate (joriy + oldingi) + low stock count.
+export async function getDashboardKpi(
+  storeId: string | undefined,
+  dr: DashboardDateRange,
+) {
+  const sf = storeFilter(storeId);
+
+  const cur = await prisma.sale.aggregate({
+    where: { ...sf, createdAt: { gte: dr.currentFrom, lte: dr.currentTo } },
+    _sum: { totalAmount: true, paidAmount: true },
+    _count: { _all: true },
+  });
+  const prev = await prisma.sale.aggregate({
+    where: { ...sf, createdAt: { gte: dr.prevFrom, lte: dr.prevTo } },
+    _sum: { totalAmount: true, paidAmount: true },
+    _count: { _all: true },
+  });
+
+  const curRevenue = num(cur._sum.totalAmount);
+  const curPaid = num(cur._sum.paidAmount);
+  const curDebt = curRevenue - curPaid;
+  const curOrders = cur._count._all;
+
+  const prevRevenue = num(prev._sum.totalAmount);
+  const prevPaid = num(prev._sum.paidAmount);
+  const prevDebt = prevRevenue - prevPaid;
+  const prevOrders = prev._count._all;
+
+  // lowStockCount — ProductBatch.quantity < threshold, is_active=true
+  const lowStockCount = await prisma.productBatch.count({
+    where: { ...sf, quantity: { lt: LOW_STOCK_THRESHOLD }, isActive: true },
+  });
+
+  return {
+    revenue: curRevenue,
+    revenueGrowth: growth(curRevenue, prevRevenue),
+    debt: curDebt,
+    debtGrowth: growth(curDebt, prevDebt),
+    orders: curOrders,
+    ordersGrowth: growth(curOrders, prevOrders),
+    lowStockCount,
+  };
+}
+
+// ── TopPartsService.get ──
+// SaleItem -> product, sotilgan miqdor (sold) bo'yicha tartiblangan TOP 5.
+export async function getTopParts(storeId: string | undefined, dr: DashboardDateRange) {
+  const saleWhere: Prisma.SaleItemWhereInput = {
+    sale: {
+      createdAt: { gte: dr.currentFrom, lte: dr.currentTo },
+      ...(storeId && storeId !== 'all' ? { storeId: Number(storeId) } : {}),
+    },
+  };
+
+  const grouped = await prisma.saleItem.groupBy({
+    by: ['productId'],
+    where: saleWhere,
+    _sum: { quantity: true, totalPrice: true },
+    orderBy: { _sum: { quantity: 'desc' } },
+    take: TOP_PARTS_LIMIT,
+  });
+
+  const productIds = grouped.map((g) => g.productId);
+  const products = await prisma.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true, name: true },
+  });
+  const nameMap = new Map(products.map((p) => [p.id, p.name]));
+
+  return grouped.map((g) => ({
+    id: g.productId,
+    name: nameMap.get(g.productId) ?? null,
+    sold: g._sum.quantity ?? 0,
+    rev: num(g._sum.totalPrice ?? D0),
+  }));
+}
+
+// ── LowStockService.get ──
+// quantity < threshold, is_active; quantity bo'yicha o'sish tartibi; LIMIT 3.
+export async function getLowStock(storeId: string | undefined) {
+  const sf = storeFilter(storeId);
+  const batches = await prisma.productBatch.findMany({
+    where: { ...sf, quantity: { lt: LOW_STOCK_THRESHOLD }, isActive: true },
+    select: { id: true, quantity: true, product: { select: { name: true } } },
+    orderBy: { quantity: 'asc' },
+    take: LOW_STOCK_LIMIT,
+  });
+
+  return batches.map((b) => ({
+    id: b.id,
+    name: b.product.name,
+    quantity: b.quantity,
+  }));
+}
+
+// ── RecentSalesService.get ──
+// Oxirgi N ta sotuv; mijoz bo'lmasa seller.full_name; minutesAgo.
+export async function getRecentSales(storeId: string | undefined) {
+  const now = Date.now();
+  const sf = storeFilter(storeId);
+  const sales = await prisma.sale.findMany({
+    where: { ...sf },
+    select: {
+      id: true,
+      totalAmount: true,
+      status: true,
+      createdAt: true,
+      customer: { select: { fullName: true } },
+      seller: { select: { fullName: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: RECENT_SALES_LIMIT,
+  });
+
+  return sales.map((s) => ({
+    id: s.id,
+    client: s.customer
+      ? s.customer.fullName
+      : `${s.seller.fullName ?? ''}`.trim(),
+    amount: num(s.totalAmount),
+    minutesAgo: Math.max(0, Math.floor((now - s.createdAt.getTime()) / 1000 / 60)),
+    type: s.status,
+  }));
+}
+
+// ── DashboardAPIView.get facade ──
+// period validatsiyasi view'da bo'ladi; bu yerda barcha bloklar yig'iladi.
+export async function getDashboard(period: string, storeId: string | undefined) {
+  const dr = resolveDashboardRange(period);
+
+  const [kpi, topParts, lowStock, recentSales, chart] = await Promise.all([
+    getDashboardKpi(storeId, dr),
+    getTopParts(storeId, dr),
+    getLowStock(storeId),
+    getRecentSales(storeId),
+    buildChart(storeId, dr, period),
+  ]);
+
+  return {
+    kpi,
+    topParts,
+    lowStock,
+    recentSales,
+    chart,
+  };
+}

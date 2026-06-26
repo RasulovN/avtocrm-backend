@@ -1,0 +1,1039 @@
+// AutoCRM SaaS — Prisma schema (PostgreSQL)
+// Multi-tenant: har bir CRM yozuvi `companyId` orqali tenant (Company)ga bog'langan.
+// Platforma darajasi: Super admin -> Company -> Company users (RBAC rol/ruxsat).
+// Tarjima (django-modeltranslation) maydonlari uchun `*UzCyrl` ustunlari saqlangan.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+//  SAAS PLATFORM — Company, RBAC, Subscription, Address
+// ============================================================
+
+model Company {
+  id         Int     @id @default(autoincrement())
+  name       String  @db.VarChar(255)
+  nameUzCyrl String? @map("name_uz_cyrl") @db.VarChar(255)
+  slug       String? @unique @db.VarChar(255)
+
+  ownerId Int  @unique @map("owner_id")
+  owner   User @relation("CompanyOwner", fields: [ownerId], references: [id])
+
+  categoryId Int?             @map("category_id")
+  category   CompanyCategory? @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  // Manzil (ierarxik) + xarita
+  countryId  Int?      @map("country_id")
+  country    Country?  @relation(fields: [countryId], references: [id], onDelete: SetNull)
+  regionId   Int?      @map("region_id")
+  region     Region?   @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  districtId Int?      @map("district_id")
+  district   District? @relation(fields: [districtId], references: [id], onDelete: SetNull)
+  street     String?
+  latitude   Decimal?  @db.Decimal(10, 7)
+  longitude  Decimal?  @db.Decimal(10, 7)
+
+  phoneNumber String? @map("phone_number") @db.VarChar(20)
+  email       String? @db.VarChar(254)
+  logo        String? @db.VarChar(255)
+
+  // onboarding -> active -> suspended
+  status   String  @default("onboarding") @db.VarChar(20)
+  isActive Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // SaaS bog'lanishlar
+  users         User[]         @relation("CompanyMembers")
+  roles         Role[]
+  subscriptions Subscription[]
+
+  // CRM bog'lanishlar (tenant ma'lumotlari)
+  stores                  Store[]
+  customers               Customer[]
+  suppliers               Supplier[]
+  categories              Category[]
+  brands                  Brand[]
+  products                Product[]
+  productLocations        ProductLocation[]
+  productUnitMeasurements ProductUnitMeasurement[]
+  productBatches          ProductBatch[]
+  stockEntries            StockEntry[]
+  supplierTransactions    SupplierTransaction[]
+  inventorySessions       InventorySession[]
+  lowStockItems           LowStockItem[]
+  sales                   Sale[]
+  saleReturns             SaleReturn[]
+  payments                Payment[]
+  customerDebts           CustomerDebt[]
+  stockTransfers          StockTransfer[]
+  notifications           Notification[]
+  announcements           Announcement[]
+  auditLogs               AuditLog[]
+
+  @@index([categoryId])
+  @@index([status])
+  @@index([countryId, regionId, districtId])
+  @@map("company")
+}
+
+model CompanyCategory {
+  id                Int      @id @default(autoincrement())
+  name              String   @unique @db.VarChar(150)
+  nameRu            String?  @map("name_ru")
+  nameEn            String?  @map("name_en")
+  nameUzCyrl        String?  @map("name_uz_cyrl") @db.VarChar(150)
+  slug              String   @unique @db.VarChar(160)
+  description       String?
+  descriptionRu     String?  @map("description_ru")
+  descriptionEn     String?  @map("description_en")
+  descriptionUzCyrl String?  @map("description_uz_cyrl")
+  icon              String?  @db.VarChar(255)
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  companies Company[]
+
+  @@map("company_category")
+}
+
+// ---- Manzil ierarxiyasi (super admin to'ldiradi) ----
+
+model Country {
+  id         Int      @id @default(autoincrement())
+  name       String   @db.VarChar(150)
+  nameUzCyrl String?  @map("name_uz_cyrl") @db.VarChar(150)
+  nameRu     String?  @map("name_ru") @db.VarChar(150)
+  nameEn     String?  @map("name_en") @db.VarChar(150)
+  code       String?  @db.VarChar(5)
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  regions   Region[]
+  companies Company[]
+
+  @@map("country")
+}
+
+model Region {
+  id         Int      @id @default(autoincrement())
+  countryId  Int      @map("country_id")
+  country    Country  @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  name       String   @db.VarChar(150)
+  nameUzCyrl String?  @map("name_uz_cyrl") @db.VarChar(150)
+  nameRu     String?  @map("name_ru") @db.VarChar(150)
+  nameEn     String?  @map("name_en") @db.VarChar(150)
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  districts District[]
+  companies Company[]
+
+  @@index([countryId])
+  @@map("region")
+}
+
+model District {
+  id         Int      @id @default(autoincrement())
+  regionId   Int      @map("region_id")
+  region     Region   @relation(fields: [regionId], references: [id], onDelete: Cascade)
+  name       String   @db.VarChar(150)
+  nameUzCyrl String?  @map("name_uz_cyrl") @db.VarChar(150)
+  nameRu     String?  @map("name_ru") @db.VarChar(150)
+  nameEn     String?  @map("name_en") @db.VarChar(150)
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  companies Company[]
+
+  @@index([regionId])
+  @@map("district")
+}
+
+// ---- RBAC ----
+
+model Permission {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique @db.VarChar(100) // masalan: "products.view", "roles.manage"
+  label     String   @db.VarChar(150)
+  module    String   @db.VarChar(50) // menu/modul guruhi
+  // platform = super admin tomoni, company = kompaniya tomoni, both = ikkalasi
+  scope     String   @default("company") @db.VarChar(10)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  rolePermissions RolePermission[]
+
+  @@index([module])
+  @@index([scope])
+  @@map("permission")
+}
+
+model Role {
+  id          Int      @id @default(autoincrement())
+  name        String   @db.VarChar(100)
+  description String?
+  // platform = super admin rollari (companyId null), company = kompaniya rollari
+  scope       String   @db.VarChar(10)
+  companyId   Int?     @map("company_id")
+  company     Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  // tizim roli (Owner, Super Admin) — o'chirib bo'lmaydi
+  isSystem    Boolean  @default(false) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  permissions RolePermission[]
+  users       User[]
+
+  @@unique([companyId, name])
+  @@index([scope])
+  @@map("role")
+}
+
+model RolePermission {
+  id           Int        @id @default(autoincrement())
+  roleId       Int        @map("role_id")
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId Int        @map("permission_id")
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permission")
+}
+
+// ---- Obuna / Tariflar ----
+
+model Plan {
+  id                Int      @id @default(autoincrement())
+  name              String   @db.VarChar(100)
+  nameRu            String?  @map("name_ru")
+  nameEn            String?  @map("name_en")
+  nameUzCyrl        String?  @map("name_uz_cyrl")
+  description       String?
+  descriptionRu     String?  @map("description_ru")
+  descriptionEn     String?  @map("description_en")
+  descriptionUzCyrl String?  @map("description_uz_cyrl")
+  price             Decimal  @db.Decimal(15, 2)
+  durationDays      Int      @map("duration_days") // obuna muddati (kun)
+  features          Json? // tarif imkoniyatlari
+  maxStores         Int?     @map("max_stores")
+  maxUsers          Int?     @map("max_users")
+  isActive          Boolean  @default(true) @map("is_active")
+  sortOrder         Int      @default(0) @map("sort_order")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  subscriptions Subscription[]
+
+  @@map("plan")
+}
+
+model Subscription {
+  id        Int       @id @default(autoincrement())
+  companyId Int       @map("company_id")
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  planId    Int       @map("plan_id")
+  plan      Plan      @relation(fields: [planId], references: [id], onDelete: Restrict)
+  // pending -> active -> expired / cancelled
+  status    String    @default("pending") @db.VarChar(20)
+  amount    Decimal   @db.Decimal(15, 2)
+  startAt   DateTime? @map("start_at")
+  endAt     DateTime? @map("end_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  transactions PaymeTransaction[]
+
+  @@index([companyId, status])
+  @@map("subscription")
+}
+
+model PaymeTransaction {
+  id             Int           @id @default(autoincrement())
+  paycomId       String        @unique @map("paycom_id") @db.VarChar(50) // Payme tranzaksiya id
+  subscriptionId Int?          @map("subscription_id")
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  amount         Decimal       @db.Decimal(15, 2) // tiyin
+  // 1 = yaratilgan, 2 = bajarilgan, -1 = bekor (perform oldidan), -2 = bekor (perform keyin)
+  state          Int           @default(1)
+  reason         Int?
+  createTime     BigInt        @default(0) @map("create_time")
+  performTime    BigInt        @default(0) @map("perform_time")
+  cancelTime     BigInt        @default(0) @map("cancel_time")
+  account        Json?
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  @@map("payme_transaction")
+}
+
+model EmailVerification {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String    @unique @db.VarChar(255)
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("email_verification")
+}
+
+// ============================================================
+//  USERS
+// ============================================================
+
+model User {
+  id          Int     @id @default(autoincrement())
+  fullName    String? @map("full_name") @db.VarChar(128)
+  phoneNumber String? @unique @map("phone_number") @db.VarChar(20)
+  email       String? @unique @db.VarChar(254)
+  password    String  @db.VarChar(255)
+
+  isActive        Boolean   @default(true) @map("is_active")
+  isStaff         Boolean   @default(false) @map("is_staff")
+  isSuperuser     Boolean   @default(false) @map("is_superuser")
+  isEmailVerified Boolean   @default(false) @map("is_email_verified")
+  lastLogin       DateTime? @map("last_login")
+
+  // Foydalanuvchi qaysi platformadan ro'yxatdan o'tgan/kiradi: web | mobile
+  // Notification segmentlash uchun ("mobil userlar")
+  platform String @default("web") @map("platform") @db.VarChar(10)
+
+  // Tenant a'zoligi (super admin uchun null)
+  companyId Int?     @map("company_id")
+  company   Company? @relation("CompanyMembers", fields: [companyId], references: [id], onDelete: SetNull)
+  roleId    Int?     @map("role_id")
+  role      Role?    @relation(fields: [roleId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  ownedCompany         Company?            @relation("CompanyOwner")
+  emailVerifications   EmailVerification[]
+  storeLinks           StoreUser[]         @relation("UserStoreLinks")
+  history              UserHistory[]
+  stockEntries         StockEntry[]
+  inventorySessions    InventorySession[]
+  sales                Sale[]
+  saleReturns          SaleReturn[]
+  createdTransfers     StockTransfer[]     @relation("CreatedTransfers")
+  approvedTransfers    StockTransfer[]     @relation("ApprovedTransfers")
+  notifications        Notification[]
+  announcementsCreated Announcement[]      @relation("AnnouncementsCreated")
+  auditLogs            AuditLog[]
+
+  @@index([phoneNumber])
+  @@index([email])
+  @@index([companyId])
+  @@index([platform])
+  @@map("users_user")
+}
+
+model Customer {
+  id          Int      @id @default(autoincrement())
+  companyId   Int      @map("company_id")
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  fullName    String   @map("full_name") @db.VarChar(100)
+  phoneNumber String   @map("phone_number") @db.VarChar(20)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  sales       Sale[]
+  payments    Payment[]
+  debts       CustomerDebt[]
+  saleReturns SaleReturn[]
+
+  @@index([companyId])
+  @@map("users_customer")
+}
+
+model UserHistory {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action    String   @db.VarChar(10) // li=Login, lo=Logout
+  ipAddress String?  @map("ip_address") @db.VarChar(45)
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("users_userhistory")
+}
+
+// ============================================================
+//  STORE
+// ============================================================
+
+model Store {
+  id            Int     @id @default(autoincrement())
+  companyId     Int     @map("company_id")
+  company       Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name          String  @db.VarChar(255)
+  nameUzCyrl    String? @map("name_uz_cyrl") @db.VarChar(255)
+  phoneNumber   String  @map("phone_number") @db.VarChar(20)
+  address       String
+  addressUzCyrl String? @map("address_uz_cyrl")
+  type          String  @db.VarChar(10) // b=Base, s=Store
+
+  latitude  Decimal? @db.Decimal(9, 6)
+  longitude Decimal? @db.Decimal(9, 6)
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  userLinks          StoreUser[]         @relation("StoreUserLinks")
+  productBatches     ProductBatch[]
+  stockEntries       StockEntry[]
+  inventorySessions  InventorySession[]
+  inventorySnapshots InventorySnapshot[]
+  sales              Sale[]
+  saleReturns        SaleReturn[]
+  outgoingTransfers  StockTransfer[]     @relation("OutgoingTransfers")
+  incomingTransfers  StockTransfer[]     @relation("IncomingTransfers")
+  lowStockItems      LowStockItem[]
+
+  @@index([companyId])
+  @@index([phoneNumber])
+  @@index([type])
+  @@index([isActive])
+  @@map("store")
+}
+
+model StoreUser {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  user      User     @relation("UserStoreLinks", fields: [userId], references: [id], onDelete: Cascade)
+  storeId   Int      @map("store_id")
+  store     Store    @relation("StoreUserLinks", fields: [storeId], references: [id], onDelete: Cascade)
+  role      String   @db.VarChar(20) // m=Manager, s=Seller
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, storeId])
+  @@index([userId])
+  @@index([storeId])
+  @@map("store_user")
+}
+
+// ============================================================
+//  PRODUCTS
+// ============================================================
+
+model Category {
+  id                Int      @id @default(autoincrement())
+  companyId         Int      @map("company_id")
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  slug              String   @db.VarChar(100)
+  name              String   @db.VarChar(100)
+  nameRu            String?  @map("name_ru")
+  nameEn            String?  @map("name_en")
+  nameUzCyrl        String?  @map("name_uz_cyrl") @db.VarChar(100)
+  description       String
+  descriptionRu     String?  @map("description_ru")
+  descriptionEn     String?  @map("description_en")
+  descriptionUzCyrl String?  @map("description_uz_cyrl")
+  image             String?  @db.VarChar(255)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  products Product[]
+
+  @@unique([companyId, slug])
+  @@index([companyId])
+  @@map("category")
+}
+
+model Brand {
+  id         Int     @id @default(autoincrement())
+  companyId  Int     @map("company_id")
+  company    Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name       String  @db.VarChar(100)
+  nameUzCyrl String? @map("name_uz_cyrl") @db.VarChar(100)
+
+  products Product[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+  @@map("brand")
+}
+
+model Product {
+  id                Int                     @id @default(autoincrement())
+  companyId         Int                     @map("company_id")
+  company           Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  categoryId        Int?                    @map("category_id")
+  category          Category?               @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  brandId           Int?                    @map("brand_id")
+  brand             Brand?                  @relation(fields: [brandId], references: [id], onDelete: Restrict)
+  name              String                  @db.VarChar(100)
+  nameUzCyrl        String?                 @map("name_uz_cyrl") @db.VarChar(100)
+  unitMeasurementId Int?                    @map("unit_measurement_id")
+  unitMeasurement   ProductUnitMeasurement? @relation(fields: [unitMeasurementId], references: [id], onDelete: Restrict)
+  description       String                  @default("")
+  descriptionUzCyrl String?                 @map("description_uz_cyrl")
+
+  sku        String? @db.VarChar(64)
+  barcode    String? @db.VarChar(13)
+  shtrixCode String? @map("shtrix_code") @db.VarChar(255)
+
+  status   String @default("a") @db.VarChar(20) // a=Active, i=Inactive, d=Draft
+  minStock Int    @default(0) @map("min_stock")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  images               ProductImage[]
+  batches              ProductBatch[]
+  stockEntryItems      StockEntryItem[]
+  inventorySnapshots   InventorySnapshot[]
+  inventoryCounts      InventoryCount[]
+  inventoryMovements   InventoryMovement[]
+  inventoryAdjustments InventoryAdjustment[]
+  lowStockItems        LowStockItem[]
+  saleItems            SaleItem[]
+  saleReturnItems      SaleReturnItem[]
+  transferItems        StockTransferItem[]
+
+  @@unique([companyId, sku])
+  @@unique([companyId, barcode])
+  @@index([companyId])
+  @@index([sku])
+  @@index([barcode])
+  @@index([name])
+  @@map("product")
+}
+
+model ProductImage {
+  id        Int     @id @default(autoincrement())
+  productId Int     @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  image     String  @db.VarChar(255)
+
+  @@map("product_image")
+}
+
+model ProductBatch {
+  id             Int              @id @default(autoincrement())
+  companyId      Int              @map("company_id")
+  company        Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  locationId     Int?             @map("location_id")
+  location       ProductLocation? @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  productId      Int              @map("product_id")
+  product        Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  storeId        Int              @map("store_id")
+  store          Store            @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  quantity       Int
+  purchasePrice  Decimal          @map("purchase_price") @db.Decimal(12, 2)
+  sellingPrice   Decimal          @map("selling_price") @db.Decimal(12, 2)
+  wholesalePrice Decimal          @default(0) @map("wholesale_price") @db.Decimal(12, 2)
+  isActive       Boolean          @default(true) @map("is_active")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  @@index([companyId])
+  @@index([storeId, productId])
+  @@map("product_batch")
+}
+
+model ProductLocation {
+  id                Int      @id @default(autoincrement())
+  companyId         Int      @map("company_id")
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  location          String
+  locationUzCyrl    String?  @map("location_uz_cyrl")
+  locationRu        String?  @map("location_ru")
+  locationEn        String?  @map("location_en")
+  description       String
+  descriptionUzCyrl String?  @map("description_uz_cyrl")
+  descriptionRu     String?  @map("description_ru")
+  descriptionEn     String?  @map("description_en")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  batches ProductBatch[]
+
+  @@index([companyId])
+  @@map("product_location")
+}
+
+model ProductUnitMeasurement {
+  id                Int      @id @default(autoincrement())
+  companyId         Int      @map("company_id")
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  measurement       String   @db.VarChar(50)
+  measurementUzCyrl String?  @map("measurement_uz_cyrl") @db.VarChar(50)
+  measurementRu     String?  @map("measurement_ru") @db.VarChar(50)
+  measurementEn     String?  @map("measurement_en") @db.VarChar(50)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  products Product[]
+
+  @@index([companyId])
+  @@map("product_unit_measurement")
+}
+
+// ============================================================
+//  CONTRACT (suppliers, stock entries)
+// ============================================================
+
+model Supplier {
+  id                Int      @id @default(autoincrement())
+  companyId         Int      @map("company_id")
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name              String   @db.VarChar(255)
+  nameUzCyrl        String?  @map("name_uz_cyrl") @db.VarChar(255)
+  phoneNumber       String   @map("phone_number") @db.VarChar(20)
+  description       String
+  descriptionUzCyrl String?  @map("description_uz_cyrl")
+  inn               String?  @db.VarChar(50)
+  address           String
+  addressUzCyrl     String?  @map("address_uz_cyrl")
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  entries      StockEntry[]
+  transactions SupplierTransaction[]
+
+  @@unique([companyId, inn])
+  @@index([companyId])
+  @@index([phoneNumber])
+  @@index([inn])
+  @@map("supplier")
+}
+
+model StockEntry {
+  id          Int      @id @default(autoincrement())
+  companyId   Int      @map("company_id")
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplierId  Int      @map("supplier_id")
+  supplier    Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  storeId     Int      @map("store_id")
+  store       Store    @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  totalAmount Decimal  @default(0) @map("total_amount") @db.Decimal(15, 2)
+  cashAmount  Decimal  @default(0) @map("cash_amount") @db.Decimal(15, 2)
+  cardAmount  Decimal  @default(0) @map("card_amount") @db.Decimal(15, 2)
+  paidAmount  Decimal  @default(0) @map("paid_amount") @db.Decimal(15, 2)
+  debtAmount  Decimal  @default(0) @map("debt_amount") @db.Decimal(15, 2)
+  paymentType String   @default("cash") @map("payment_type") @db.VarChar(7) // cash/card/mixed
+  createdById Int?     @map("created_by_id")
+  createdBy   User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  items        StockEntryItem[]
+  transactions SupplierTransaction[]
+
+  @@index([companyId])
+  @@map("stock_entry")
+}
+
+model StockEntryItem {
+  id             Int        @id @default(autoincrement())
+  entryId        Int        @map("entry_id")
+  entry          StockEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  productId      Int        @map("product_id")
+  product        Product    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  quantity       Int
+  purchasePrice  Decimal    @map("purchase_price") @db.Decimal(12, 2)
+  sellingPrice   Decimal    @map("selling_price") @db.Decimal(12, 2)
+  wholesalePrice Decimal    @default(0) @map("wholesale_price") @db.Decimal(12, 2)
+
+  @@map("stock_entry_item")
+}
+
+model SupplierTransaction {
+  id         Int         @id @default(autoincrement())
+  companyId  Int         @map("company_id")
+  company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplierId Int         @map("supplier_id")
+  supplier   Supplier    @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  entryId    Int?        @map("entry_id")
+  entry      StockEntry? @relation(fields: [entryId], references: [id], onDelete: SetNull)
+  amount     Decimal     @db.Decimal(15, 2)
+  type       String      @db.VarChar(5) // in / pay
+  note       String      @default("")
+  createdAt  DateTime    @default(now()) @map("created_at")
+  updatedAt  DateTime    @updatedAt @map("updated_at")
+
+  @@index([companyId])
+  @@map("supplier_transaction")
+}
+
+// ============================================================
+//  INVENTORY
+// ============================================================
+
+model InventorySession {
+  id            Int      @id @default(autoincrement())
+  companyId     Int      @map("company_id")
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  storeId       Int      @map("store_id")
+  store         Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  startedById   Int?     @map("started_by_id")
+  startedBy     User?    @relation(fields: [startedById], references: [id], onDelete: SetNull)
+  startedAt     DateTime @default(now()) @map("started_at")
+  status        String   @default("active") @db.VarChar(20) // active/completed/cancelled
+  snapshotTaken Boolean  @default(false) @map("snapshot_taken")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  snapshots   InventorySnapshot[]
+  counts      InventoryCount[]
+  movements   InventoryMovement[]
+  adjustments InventoryAdjustment[]
+
+  @@index([companyId])
+  @@index([storeId, status])
+  @@map("inventory_session")
+}
+
+model InventorySnapshot {
+  id               Int              @id @default(autoincrement())
+  sessionId        Int              @map("session_id")
+  session          InventorySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  productId        Int              @map("product_id")
+  product          Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  storeId          Int              @map("store_id")
+  store            Store            @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  expectedQuantity Int              @map("expected_quantity")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  @@unique([sessionId, productId])
+  @@index([sessionId, productId])
+  @@map("inventory_snapshot")
+}
+
+model InventoryCount {
+  id              Int              @id @default(autoincrement())
+  sessionId       Int              @map("session_id")
+  session         InventorySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  productId       Int              @map("product_id")
+  product         Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  countedQuantity Int              @default(0) @map("counted_quantity")
+  status          String           @default("p") @db.VarChar(10) // p/e/l/m
+  isCheck         Boolean          @default(false) @map("is_check")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  @@unique([sessionId, productId])
+  @@map("inventory_count")
+}
+
+model InventoryMovement {
+  id        Int              @id @default(autoincrement())
+  sessionId Int              @map("session_id")
+  session   InventorySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  productId Int              @map("product_id")
+  product   Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity  Int
+  type      String           @db.VarChar(20) // s/to/r/ti/e
+  refId     Int              @map("ref_id")
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+
+  @@index([sessionId, productId])
+  @@map("inventory_movement")
+}
+
+model InventoryAdjustment {
+  id         Int              @id @default(autoincrement())
+  sessionId  Int              @map("session_id")
+  session    InventorySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  productId  Int              @map("product_id")
+  product    Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  difference Int
+  createdAt  DateTime         @default(now()) @map("created_at")
+  updatedAt  DateTime         @updatedAt @map("updated_at")
+
+  @@index([sessionId])
+  @@map("inventory_adjustment")
+}
+
+model LowStockItem {
+  id              Int       @id @default(autoincrement())
+  companyId       Int       @map("company_id")
+  company         Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  storeId         Int       @map("store_id")
+  store           Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  productId       Int       @map("product_id")
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  currentQuantity Int       @map("current_quantity")
+  minStock        Int       @map("min_stock")
+  actionType      String    @map("action_type") @db.VarChar(10) // purchase/transfer
+  status          String    @default("open") @db.VarChar(10) // open/resolved
+  resolvedAt      DateTime? @map("resolved_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@index([companyId])
+  @@index([status, actionType])
+  @@index([storeId, status])
+  @@index([productId, status])
+  @@index([status, createdAt])
+  @@map("low_stock_item")
+}
+
+// ============================================================
+//  SALES
+// ============================================================
+
+model Sale {
+  id             Int       @id @default(autoincrement())
+  companyId      Int       @map("company_id")
+  company        Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  storeId        Int       @map("store_id")
+  store          Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  customerId     Int?      @map("customer_id")
+  customer       Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  sellerId       Int       @map("seller_id")
+  seller         User      @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  totalAmount    Decimal   @default(0) @map("total_amount") @db.Decimal(20, 2)
+  paidAmount     Decimal   @default(0) @map("paid_amount") @db.Decimal(20, 2)
+  status         String    @db.VarChar(10) // paid/partial/debt/r
+  discountType   String?   @map("discount_type") @db.VarChar(10) // p/f
+  discountValue  Decimal   @default(0) @map("discount_value") @db.Decimal(20, 2)
+  discountAmount Decimal   @default(0) @map("discount_amount") @db.Decimal(20, 2)
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  items       SaleItem[]
+  payments    Payment[]
+  returns     SaleReturn[]
+  debtRecords CustomerDebt[]
+
+  @@index([companyId])
+  @@index([customerId])
+  @@index([status])
+  @@map("sales_sale")
+}
+
+model SaleItem {
+  id               Int      @id @default(autoincrement())
+  saleId           Int      @map("sale_id")
+  sale             Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId        Int      @map("product_id")
+  product          Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity         Int
+  purchasePrice    Decimal? @map("purchase_price") @db.Decimal(20, 2)
+  unitPrice        Decimal  @map("unit_price") @db.Decimal(20, 2)
+  totalPrice       Decimal  @map("total_price") @db.Decimal(20, 2)
+  returnedQuantity Int      @default(0) @map("returned_quantity")
+
+  returnItems SaleReturnItem[]
+
+  @@map("sales_saleitem")
+}
+
+model Payment {
+  id         Int       @id @default(autoincrement())
+  companyId  Int       @map("company_id")
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  saleId     Int?      @map("sale_id")
+  sale       Sale?     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  customerId Int?      @map("customer_id")
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  amount     Decimal   @db.Decimal(20, 2)
+  type       String    @db.VarChar(5) // cash/card
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@index([companyId])
+  @@map("sales_payment")
+}
+
+model SaleReturn {
+  id          Int       @id @default(autoincrement())
+  companyId   Int       @map("company_id")
+  company     Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  saleId      Int       @map("sale_id")
+  sale        Sale      @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  storeId     Int       @map("store_id")
+  store       Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  customerId  Int?      @map("customer_id")
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  sellerId    Int       @map("seller_id")
+  seller      User      @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  totalRefund Decimal   @default(0) @map("total_refund") @db.Decimal(20, 2)
+  comment     String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  items SaleReturnItem[]
+
+  @@index([companyId])
+  @@map("sale_return")
+}
+
+model SaleReturnItem {
+  id           Int        @id @default(autoincrement())
+  saleReturnId Int        @map("sale_return_id")
+  saleReturn   SaleReturn @relation(fields: [saleReturnId], references: [id], onDelete: Cascade)
+  saleItemId   Int        @map("sale_item_id")
+  saleItem     SaleItem   @relation(fields: [saleItemId], references: [id], onDelete: Restrict)
+  productId    Int        @map("product_id")
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  quantity     Int
+  unitPrice    Decimal    @map("unit_price") @db.Decimal(20, 2)
+  totalPrice   Decimal    @map("total_price") @db.Decimal(20, 2)
+
+  @@map("sale_return_item")
+}
+
+// ============================================================
+//  DEBTS
+// ============================================================
+
+model CustomerDebt {
+  id         Int       @id @default(autoincrement())
+  companyId  Int       @map("company_id")
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customerId Int       @map("customer_id")
+  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  saleId     Int?      @map("sale_id")
+  sale       Sale?     @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  amount     Decimal   @db.Decimal(20, 2)
+  type       String    @db.VarChar(2) // i/d
+  dueDate    DateTime? @map("due_date") @db.Date
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@index([companyId])
+  @@map("debts_customerdebt")
+}
+
+// ============================================================
+//  TRANSFER
+// ============================================================
+
+model StockTransfer {
+  id           Int       @id @default(autoincrement())
+  companyId    Int       @map("company_id")
+  company      Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  fromStoreId  Int       @map("from_store_id")
+  fromStore    Store     @relation("OutgoingTransfers", fields: [fromStoreId], references: [id], onDelete: Cascade)
+  toStoreId    Int       @map("to_store_id")
+  toStore      Store     @relation("IncomingTransfers", fields: [toStoreId], references: [id], onDelete: Cascade)
+  status       String    @default("p") @db.VarChar(1) // p/a/r
+  createdById  Int?      @map("created_by_id")
+  createdBy    User?     @relation("CreatedTransfers", fields: [createdById], references: [id], onDelete: SetNull)
+  approvedById Int?      @map("approved_by_id")
+  approvedBy   User?     @relation("ApprovedTransfers", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt   DateTime? @map("approved_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  items         StockTransferItem[]
+  notifications Notification[]
+
+  @@index([companyId])
+  @@map("stock_transfer")
+}
+
+model StockTransferItem {
+  id              Int           @id @default(autoincrement())
+  stockTransferId Int           @map("stock_transfer_id")
+  stockTransfer   StockTransfer @relation(fields: [stockTransferId], references: [id], onDelete: Cascade)
+  productId       Int           @map("product_id")
+  product         Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity        Int
+  purchasePrice   Decimal       @map("purchase_price") @db.Decimal(12, 2)
+  sellingPrice    Decimal       @map("selling_price") @db.Decimal(12, 2)
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  @@map("stock_transfer_item")
+}
+
+model Notification {
+  id             Int            @id @default(autoincrement())
+  // Platforma (super admin) broadcast'lari uchun null bo'lishi mumkin
+  companyId      Int?           @map("company_id")
+  company        Company?       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId         Int            @map("user_id")
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type           String         @db.VarChar(20) // tc/ta/tr/lp/lt/announcement
+  title          String         @db.VarChar(255)
+  message        String
+  link           String?        @db.VarChar(255) // bosilganda yo'naltirish (ixtiyoriy)
+  isRead         Boolean        @default(false) @map("is_read")
+  // Hayot sikli: active -> archived -> (avtomatik o'chiriladi)
+  status         String         @default("active") @db.VarChar(10)
+  archivedAt     DateTime?      @map("archived_at")
+  transferId     Int?           @map("transfer_id")
+  transfer       StockTransfer? @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  announcementId Int?           @map("announcement_id")
+  // SetNull: admin broadcast'ni o'chirsa, qabul qiluvchilarning bildirishnomasi DB'da QOLADI.
+  announcement   Announcement?  @relation(fields: [announcementId], references: [id], onDelete: SetNull)
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  @@index([companyId])
+  @@index([userId, isRead])
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@index([status, archivedAt])
+  @@map("notification")
+}
+
+// Super admin tomonidan yuborilgan ommaviy bildirishnoma (broadcast) yozuvi.
+// Har bir qabul qiluvchi uchun alohida Notification yozuvi yaratiladi (o'qilgan holati uchun).
+model Announcement {
+  id             Int      @id @default(autoincrement())
+  createdById    Int?     @map("created_by_id")
+  createdBy      User?    @relation("AnnouncementsCreated", fields: [createdById], references: [id], onDelete: SetNull)
+  title          String   @db.VarChar(255)
+  message        String
+  link           String?  @db.VarChar(255)
+  // all | mobile | company_users | company_admins | company
+  audience       String   @db.VarChar(20)
+  // audience = company bo'lsa, aniq kompaniya
+  companyId      Int?     @map("company_id")
+  company        Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  recipientCount Int      @default(0) @map("recipient_count")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  notifications Notification[]
+
+  @@index([audience])
+  @@map("announcement")
+}
+
+// Foydalanuvchi harakatlari auditi (asosiy amallar: login/logout, create/update/delete)
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?     @map("user_id")
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  companyId Int?     @map("company_id")
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  // login | logout | create | update | delete
+  action    String   @db.VarChar(20)
+  // qaysi modul/obyekt: product, sale, transfer, stock_entry, user, price, category ...
+  entity    String?  @db.VarChar(50)
+  entityId  Int?     @map("entity_id")
+  // qisqacha izoh (masalan "Mahsulot 'X' yaratildi") va qo'shimcha ma'lumot
+  summary   String?  @db.VarChar(255)
+  meta      Json?
+  ipAddress String?  @map("ip_address") @db.VarChar(45)
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([companyId, createdAt])
+  @@index([userId, createdAt])
+  @@index([entity])
+  @@map("audit_log")
+}
