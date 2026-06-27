@@ -4,7 +4,13 @@ import { NotFound } from '../../common/errors.js';
 import { sendMail } from '../../common/email.js';
 import { env } from '../../config/env.js';
 import { pushNotifications } from '../notifications/notification.service.js';
-import type { LeadCreateInput, LeadUpdateInput } from './leads.schemas.js';
+import {
+  normalizeSource,
+  LEAD_STATUSES,
+  type LeadCreateInput,
+  type LeadAdminCreateInput,
+  type LeadUpdateInput,
+} from './leads.schemas.js';
 
 export function serializeLead(l: Lead) {
   return {
@@ -125,7 +131,8 @@ export async function createLead(data: LeadCreateInput): Promise<Lead> {
       storesRange: data.stores_range?.trim() || null,
       message: data.message?.trim() || null,
       locale: data.locale || null,
-      source: 'landing',
+      // Landing formasidan tanlangan kanal (Instagram/Telegram/...) — bo'lmasa "sayt".
+      source: normalizeSource(data.source, 'website'),
     },
   });
   // Bildirishnoma yuborilmasa ham zayavka saqlanib qoladi.
@@ -137,27 +144,60 @@ export async function createLead(data: LeadCreateInput): Promise<Lead> {
   return lead;
 }
 
+// Super admin qo'lda lead qo'shadi (manba odatda "manual" yoki tanlangan kanal).
+export async function createLeadAdmin(data: LeadAdminCreateInput): Promise<Lead> {
+  return prisma.lead.create({
+    data: {
+      name: data.name.trim(),
+      phone: data.phone.trim(),
+      email: data.email.trim(),
+      company: data.company?.trim() || null,
+      storesRange: data.stores_range?.trim() || null,
+      message: data.message?.trim() || null,
+      locale: data.locale || null,
+      source: normalizeSource(data.source, 'manual'),
+      status: data.status || 'new',
+      note: data.note?.trim() || null,
+    },
+  });
+}
+
 export async function listLeads(opts: {
   skip: number;
   take: number;
   status?: string;
+  source?: string;
   search?: string;
-}): Promise<{ items: Lead[]; total: number; newCount: number }> {
-  const where: Record<string, unknown> = {};
-  if (opts.status && opts.status !== 'all') where.status = opts.status;
+}): Promise<{ items: Lead[]; total: number; newCount: number; counts: Record<string, number> }> {
+  // Filtrlar (status/source/qidiruv). counts esa qidiruv+source bo'yicha,
+  // statusdan mustaqil hisoblanadi — shunda tablar bosilganda sanoqlar o'zgarmaydi.
+  const baseWhere: Record<string, unknown> = {};
+  if (opts.source && opts.source !== 'all') baseWhere.source = opts.source;
   if (opts.search) {
-    where.OR = [
+    baseWhere.OR = [
       { name: { contains: opts.search, mode: 'insensitive' } },
       { phone: { contains: opts.search, mode: 'insensitive' } },
+      { email: { contains: opts.search, mode: 'insensitive' } },
       { company: { contains: opts.search, mode: 'insensitive' } },
     ];
   }
-  const [items, total, newCount] = await Promise.all([
+  const where: Record<string, unknown> = { ...baseWhere };
+  if (opts.status && opts.status !== 'all') where.status = opts.status;
+
+  const [items, total, grouped] = await Promise.all([
     prisma.lead.findMany({ where, orderBy: { createdAt: 'desc' }, skip: opts.skip, take: opts.take }),
     prisma.lead.count({ where }),
-    prisma.lead.count({ where: { status: 'new' } }),
+    prisma.lead.groupBy({ by: ['status'], where: baseWhere, _count: { _all: true } }),
   ]);
-  return { items, total, newCount };
+
+  // Har bir status uchun sanoq + umumiy ("all") — funnel tablari uchun.
+  const counts: Record<string, number> = { all: 0 };
+  for (const s of LEAD_STATUSES) counts[s] = 0;
+  for (const g of grouped) {
+    counts[g.status] = g._count._all;
+    counts.all += g._count._all;
+  }
+  return { items, total, newCount: counts.new ?? 0, counts };
 }
 
 export async function getLead(id: number): Promise<Lead> {
@@ -171,6 +211,13 @@ export async function updateLead(id: number, data: LeadUpdateInput): Promise<Lea
   const lead = await prisma.lead.update({
     where: { id },
     data: {
+      name: data.name?.trim(),
+      phone: data.phone?.trim(),
+      email: data.email?.trim(),
+      company: data.company === undefined ? undefined : data.company?.trim() || null,
+      storesRange: data.stores_range === undefined ? undefined : data.stores_range?.trim() || null,
+      message: data.message === undefined ? undefined : data.message?.trim() || null,
+      source: data.source === undefined ? undefined : normalizeSource(data.source),
       status: data.status,
       note: data.note === undefined ? undefined : data.note ?? null,
     },
