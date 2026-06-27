@@ -29,7 +29,7 @@ export const env = {
   DATABASE_URL: required('DATABASE_URL'),
 
   CORS_ORIGIN: process.env.CORS_ORIGIN ?? '*',
-  FRONTEND_URL: process.env.FRONTEND_URL ?? 'https://avtoyon.uz',
+  FRONTEND_URL: process.env.FRONTEND_URL ?? 'https://zumex.uz',
   // Public backend URL (email havolalari uchun)
   APP_URL: process.env.APP_URL ?? 'http://localhost:8000',
   EMAIL_VERIFICATION_TTL: Number(process.env.EMAIL_VERIFICATION_TTL ?? 60 * 60 * 24), // 24 soat
