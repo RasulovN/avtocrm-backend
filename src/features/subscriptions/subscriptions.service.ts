@@ -3,6 +3,86 @@ import { prisma } from '../../db/prisma.js';
 import { BadRequest, NotFound } from '../../common/errors.js';
 import type { PageParams } from '../../common/pagination.js';
 import { buildCheckoutLink } from '../payments/payme.service.js';
+import { sendMail } from '../../common/email.js';
+import { noticeEmailHtml } from '../../common/emailTemplates.js';
+import { env } from '../../config/env.js';
+import { pushNotifications } from '../notifications/notification.service.js';
+
+// ─────────────────────────────────────────────
+// Obuna holati o'zgarganda kompaniyaga bildirishnoma (tizim) + email.
+// activated=true: "faollashtirildi" (register tugmasi bilan), false: "faollashtirilmadi".
+// ─────────────────────────────────────────────
+function fmtDate(d: Date | null): string {
+  if (!d) return '';
+  try { return new Intl.DateTimeFormat('uz-UZ', { dateStyle: 'long' }).format(d); } catch { return ''; }
+}
+
+export async function notifySubscriptionEvent(subscriptionId: number, activated: boolean): Promise<void> {
+  const sub = await prisma.subscription.findUnique({
+    where: { id: subscriptionId },
+    include: { plan: true, company: { select: { id: true, name: true, email: true, owner: { select: { email: true } } } } },
+  });
+  if (!sub || !sub.company) return;
+  const planName = sub.plan?.name ?? 'Obuna';
+  const companyName = sub.company.name;
+  const until = activated && sub.endAt ? fmtDate(sub.endAt) : '';
+
+  // 1) Tizim bildirishnomasi — kompaniyaning barcha foydalanuvchilariga.
+  try {
+    const users = await prisma.user.findMany({
+      where: { companyId: sub.company.id, isActive: true },
+      select: { id: true },
+    });
+    if (users.length) {
+      await pushNotifications({
+        userIds: users.map((u) => u.id),
+        companyId: sub.company.id,
+        type: 'subscription',
+        title: activated ? 'Obuna faollashtirildi' : 'Obuna faollashtirilmadi',
+        message: activated
+          ? `${planName} tarifi faollashtirildi${until ? ` · ${until} gacha` : ''}.`
+          : `${planName} obunasi faollashtirilmadi yoki bekor qilindi.`,
+        link: '/subscription',
+      });
+    }
+  } catch { /* bildirishnoma xato bo'lsa ham davom etamiz */ }
+
+  // 2) Email — kompaniya yoki egasi manziliga, chiroyli dizaynda.
+  const to = sub.company.email || sub.company.owner?.email;
+  if (!to) return;
+  const appUrl = (env.FRONTEND_URL || 'https://zumex.uz').replace(/\/+$/, '');
+  try {
+    if (activated) {
+      await sendMail({
+        to,
+        subject: 'Obunangiz faollashtirildi — Zumex',
+        html: noticeEmailHtml({
+          title: 'Obuna faollashtirildi',
+          heading: 'Obunangiz faollashtirildi 🎉',
+          intro: `Hurmatli ${companyName}! "${planName}" tarifi muvaffaqiyatli faollashtirildi.${until ? ` Obuna ${until} gacha amal qiladi.` : ''} Endi Zumex tizimining barcha imkoniyatlaridan foydalanishingiz mumkin.`,
+          buttonText: 'Tizimga kirish',
+          buttonUrl: `${appUrl}/login`,
+          footnote: 'Savollaringiz bo\'lsa biz bilan bog\'laning. Zumex bilan biznesingizni o\'stiring!',
+        }),
+        text: `Hurmatli ${companyName}! "${planName}" tarifi faollashtirildi${until ? ` (${until} gacha)` : ''}.\nTizimga kirish: ${appUrl}/login\n\nZumex jamoasi`,
+      });
+    } else {
+      await sendMail({
+        to,
+        subject: 'Obuna holati — Zumex',
+        html: noticeEmailHtml({
+          title: 'Obuna holati',
+          heading: 'Obuna faollashtirilmadi',
+          intro: `Hurmatli ${companyName}! "${planName}" obunangiz faollashtirilmadi yoki bekor qilindi. Bu vaqtinchalik bo'lishi mumkin — to'lovni qayta amalga oshirish yoki boshqa tarifni tanlash mumkin.`,
+          buttonText: 'Tariflarni ko\'rish',
+          buttonUrl: `${appUrl}/login`,
+          footnote: 'Savollaringiz bo\'lsa biz bilan bog\'laning — yordam beramiz.',
+        }),
+        text: `Hurmatli ${companyName}! "${planName}" obunangiz faollashtirilmadi yoki bekor qilindi.\n\nZumex jamoasi`,
+      });
+    }
+  } catch { /* email xato bo'lsa ham obuna holati muhim */ }
+}
 
 function decimalToString(value: Prisma.Decimal): string {
   return value.toString();
@@ -194,6 +274,7 @@ export async function patchSubscription(
       });
       return sub;
     });
+    await notifySubscriptionEvent(id, true);
     return serializeSubscription(updated);
   }
 
@@ -215,6 +296,7 @@ export async function patchSubscription(
       await tx.company.update({ where: { id: subscription.companyId }, data: { status: 'active' } });
       return sub;
     });
+    await notifySubscriptionEvent(id, true);
     return serializeSubscription(updated);
   }
 
@@ -224,5 +306,6 @@ export async function patchSubscription(
     data: { status: 'cancelled' },
     include: { plan: true, company: { select: { id: true, name: true } } },
   });
+  await notifySubscriptionEvent(id, false);
   return serializeSubscription(updated);
 }

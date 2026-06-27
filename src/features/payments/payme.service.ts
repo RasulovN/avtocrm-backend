@@ -164,7 +164,9 @@ export async function performTransaction(params: PaymeParams): Promise<PaymeRpcR
     throw new PaymeRpcException(PaymeError.TransactionNotFound, MSG_TRANSACTION_NOT_FOUND);
   }
 
-  return prisma.$transaction(async (tx) => {
+  let activatedSubId: number | null = null;
+
+  const result = await prisma.$transaction(async (tx) => {
     const trx = await tx.paymeTransaction.findUnique({ where: { paycomId } });
     if (!trx) {
       throw new PaymeRpcException(PaymeError.TransactionNotFound, MSG_TRANSACTION_NOT_FOUND);
@@ -208,6 +210,7 @@ export async function performTransaction(params: PaymeParams): Promise<PaymeRpcR
           where: { id: subscription.companyId },
           data: { status: 'active' },
         });
+        activatedSubId = subscription.id;
       }
     }
 
@@ -217,6 +220,17 @@ export async function performTransaction(params: PaymeParams): Promise<PaymeRpcR
       state: updated.state,
     };
   });
+
+  // Tranzaksiya muvaffaqiyatli yakunlangach — kompaniyaga bildirishnoma + email.
+  // Dinamik import: aylanma bog'liqlikdan qochish (subscriptions <-> payme).
+  if (activatedSubId) {
+    try {
+      const { notifySubscriptionEvent } = await import('../subscriptions/subscriptions.service.js');
+      await notifySubscriptionEvent(activatedSubId, true);
+    } catch { /* bildirishnoma xato bo'lsa ham to'lov muhim */ }
+  }
+
+  return result;
 }
 
 // CancelTransaction

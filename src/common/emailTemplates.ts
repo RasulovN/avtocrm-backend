@@ -4,9 +4,9 @@
 //  tartib + inline stillar (tashqi CSS ko'pincha o'chiriladi).
 // ============================================================
 
-const BRAND = 'AutoCRM';
-const BRAND_COLOR = '#4f46e5';
-const BRAND_COLOR_DARK = '#4338ca';
+const BRAND = 'Zumex';
+const BRAND_COLOR = '#1d4ed8';
+const BRAND_COLOR_DARK = '#1e40af';
 
 function escapeHtml(s: string): string {
   return s
@@ -102,6 +102,34 @@ export function actionEmailHtml(opts: {
                   </td>
                 </tr>
               </table>`;
+  return brandedShell({ title: opts.title, bodyHtml: body });
+}
+
+// Umumiy xabar xati: sarlavha + matn + (ixtiyoriy) tugma + (ixtiyoriy) izoh.
+// Obuna, hisob holati kabi bildirishnomalar uchun.
+export function noticeEmailHtml(opts: {
+  title: string;
+  heading: string;
+  intro: string;
+  buttonText?: string;
+  buttonUrl?: string;
+  footnote?: string;
+}): string {
+  const button = opts.buttonText && opts.buttonUrl
+    ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0 24px;">
+                <tr><td align="center" style="border-radius:10px;background:${BRAND_COLOR};box-shadow:0 2px 6px rgba(29,78,216,0.35);">
+                  <a href="${escapeHtml(opts.buttonUrl)}" target="_blank" style="display:inline-block;padding:14px 34px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:10px;border:1px solid ${BRAND_COLOR_DARK};">${escapeHtml(opts.buttonText)}</a>
+                </td></tr>
+              </table>`
+    : '';
+  const footnote = opts.footnote
+    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;"><p style="margin:0;font-size:13px;line-height:1.6;color:#64748b;">${escapeHtml(opts.footnote)}</p></td></tr></table>`
+    : '';
+  const body = `
+              <h1 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#0f172a;line-height:1.3;">${escapeHtml(opts.heading)}</h1>
+              <p style="margin:0 0 24px;font-size:15px;line-height:1.65;color:#475569;">${escapeHtml(opts.intro)}</p>
+              ${button}
+              ${footnote}`;
   return brandedShell({ title: opts.title, bodyHtml: body });
 }
 
