@@ -3,6 +3,7 @@ import slugify from 'slugify';
 import { prisma } from '../../db/prisma.js';
 import { BadRequest, NotFound } from '../../common/errors.js';
 import { mediaUrl } from '../../common/media.js';
+import { normalizeContact, EMPTY_CONTACT, type ContactInfo } from '../../common/contact.js';
 import { provisionOwnerRole } from '../rbac/rbac.service.js';
 import type { OnboardingInput, ProfileUpdateInput, StatusUpdateInput } from './companies.schemas.js';
 import type { PageParams } from '../../common/pagination.js';
@@ -91,6 +92,7 @@ function serializeFull(c: CompanyFull) {
     phone_number: c.phoneNumber,
     email: c.email,
     logo: mediaUrl(c.logo),
+    contact: normalizeContact(c.contact, EMPTY_CONTACT),
     status: c.status,
     is_active: c.isActive,
     subscription_active: computeSubscriptionActive(c.subscriptions),
@@ -228,7 +230,15 @@ export async function getMyCompany(companyId: number) {
     include: fullInclude,
   });
   if (!company) throw new NotFound({ detail: 'Kompaniya topilmadi.' });
-  return serializeFull(company);
+  // `contact` JSONB ustunini raw o'qiymiz (Prisma client regeneratsiyasiga bog'liq emas).
+  const contact = await readCompanyContactRaw(companyId);
+  return { ...serializeFull(company), contact: normalizeContact(contact, EMPTY_CONTACT) };
+}
+
+// `contact` JSONB ustunini to'g'ridan-to'g'ri o'qish (client'da bo'lmasa ham ishlaydi).
+async function readCompanyContactRaw(companyId: number): Promise<unknown> {
+  const rows = await prisma.$queryRaw<{ contact: unknown }[]>`SELECT contact FROM "company" WHERE id = ${companyId}`;
+  return rows[0]?.contact ?? null;
 }
 
 // ============================================================
@@ -283,6 +293,22 @@ export async function updateMyCompany(companyId: number, data: ProfileUpdateInpu
     include: fullInclude,
   });
   return serializeFull(refreshed!);
+}
+
+// ============================================================
+//  PUT /me/contact/ — kompaniya aloqa ma'lumotlari (ContactInfo JSON)
+// ============================================================
+export async function updateMyCompanyContact(
+  companyId: number,
+  data: Partial<ContactInfo>,
+): Promise<ContactInfo> {
+  const existing = await prisma.company.findUnique({ where: { id: companyId }, select: { id: true } });
+  if (!existing) throw new NotFound({ detail: 'Kompaniya topilmadi.' });
+  const current = normalizeContact(await readCompanyContactRaw(companyId), EMPTY_CONTACT);
+  const merged = normalizeContact({ ...current, ...data }, EMPTY_CONTACT);
+  // JSONB ustunni raw yozamiz — Prisma client'da `contact` maydoni bo'lishi shart emas.
+  await prisma.$executeRaw`UPDATE "company" SET contact = ${JSON.stringify(merged)}::jsonb, updated_at = now() WHERE id = ${companyId}`;
+  return merged;
 }
 
 // ============================================================

@@ -22,6 +22,8 @@ import { salesRoutes } from './sales/sales.routes.js';
 import { debtsRoutes } from './debts/debts.routes.js';
 import { reportsRoutes } from './reports/reports.routes.js';
 import { inventoryRoutes } from './inventory/inventory.routes.js';
+import { leadsRoutes } from './leads/leads.routes.js';
+import { siteSettingsRoutes } from './site-settings/siteSettings.routes.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // SaaS platform
@@ -35,6 +37,8 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(paymentsRoutes, { prefix: '/payments' });
   await app.register(notificationsRoutes, { prefix: '/notifications' });
   await app.register(auditRoutes, { prefix: '/audit' });
+  await app.register(leadsRoutes, { prefix: '/leads' });
+  await app.register(siteSettingsRoutes, { prefix: '/site-settings' });
 
   // CRM (tenant ma'lumotlari)
   await app.register(usersRoutes, { prefix: '/users' });

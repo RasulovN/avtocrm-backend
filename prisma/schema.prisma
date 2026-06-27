@@ -42,6 +42,9 @@ model Company {
   phoneNumber String? @map("phone_number") @db.VarChar(20)
   email       String? @db.VarChar(254)
   logo        String? @db.VarChar(255)
+  // Boy aloqa ma'lumotlari (telefon, email, manzil, xarita koordinatasi, ijtimoiy tarmoqlar).
+  // Landing/site-settings bilan bir xil ContactInfo shaklida JSON saqlanadi.
+  contact     Json?
 
   // onboarding -> active -> suspended
   status   String  @default("onboarding") @db.VarChar(20)
@@ -1036,4 +1039,34 @@ model AuditLog {
   @@index([userId, createdAt])
   @@index([entity])
   @@map("audit_log")
+}
+
+// ───────── Landing: demo so'rovlar (zayavkalar) ─────────
+model Lead {
+  id          Int      @id @default(autoincrement())
+  name        String   @db.VarChar(150)
+  phone       String   @db.VarChar(50)
+  email       String   @db.VarChar(150)
+  company     String?  @db.VarChar(150)
+  storesRange String?  @map("stores_range") @db.VarChar(50)
+  message     String?
+  source      String   @default("landing") @db.VarChar(50)
+  status      String   @default("new") @db.VarChar(20) // new | approved | rejected | contacted | closed
+  locale      String?  @db.VarChar(10)
+  note        String? // admin ichki izohi
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@map("lead")
+}
+
+// ───────── Landing: tahrirlanadigan sozlamalar (key/value JSON) ─────────
+model SiteSetting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique @db.VarChar(80)
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("site_setting")
 }

@@ -1,10 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { getPageParams, paginate } from '../../common/pagination.js';
 import { onboardingSchema, profileUpdateSchema, statusUpdateSchema } from './companies.schemas.js';
+import { contactInfoSchema } from '../site-settings/siteSettings.schemas.js';
 import {
   onboardCompany,
   getMyCompany,
   updateMyCompany,
+  updateMyCompanyContact,
   listCompanies,
   getCompanyById,
   updateCompanyStatus,
@@ -52,6 +54,22 @@ export async function companiesRoutes(app: FastifyInstance) {
     async (req) => {
       const body = profileUpdateSchema.parse(req.body);
       return updateMyCompany(req.companyId!, body);
+    },
+  );
+
+  // Kompaniya aloqa ma'lumotlari (ContactInfo: telefon, email, manzil, xarita, ijtimoiy tarmoqlar)
+  app.put(
+    '/me/contact/',
+    {
+      onRequest: [
+        app.authenticate,
+        app.requireCompany,
+        app.requirePermission('company.profile.update'),
+      ],
+    },
+    async (req) => {
+      const body = contactInfoSchema.parse(req.body);
+      return updateMyCompanyContact(req.companyId!, body);
     },
   );
 
