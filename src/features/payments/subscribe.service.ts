@@ -52,12 +52,19 @@ async function rpc<T = unknown>(method: string, params: unknown, useKey: boolean
   try {
     json = JSON.parse(text) as PaymeRpcEnvelope<T>;
   } catch {
+    // 5xx gateway xatolari -> Payme tomonidagi vaqtinchalik nosozlik (kod/credential aybi emas).
+    if (status >= 502 && status <= 504) {
+      throw new SubscribeError(
+        status,
+        `Payme Subscribe serveri vaqtincha ishlamayapti (HTTP ${status}, ${env.PAYME_SUBSCRIBE_URL}). ` +
+          `Bu Payme tomonidagi muammo — birozdan keyin qayta urinib ko'ring.`,
+      );
+    }
     const snippet = text.replace(/\s+/g, ' ').slice(0, 140);
     throw new SubscribeError(
       status || -1,
-      `Payme Subscribe endpoint JSON emas javob qaytardi (HTTP ${status}). ` +
-        `Endpoint: ${env.PAYME_SUBSCRIBE_URL}, merchant: ${env.PAYME_SUBSCRIBE_MERCHANT_ID}. ` +
-        `Bu odatda Subscribe API "Виртуальный терминал" kassasi/credential noto'g'riligini bildiradi. Javob: ${snippet}`,
+      `Payme Subscribe endpoint JSON emas javob qaytardi (HTTP ${status}, ${env.PAYME_SUBSCRIBE_URL}). ` +
+        `Subscribe API "Виртуальный терминал" kassasi/credential ni tekshiring. Javob: ${snippet}`,
     );
   }
 
