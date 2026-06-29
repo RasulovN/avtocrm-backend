@@ -100,8 +100,8 @@ const PLATFORM_DEFS: { code: string; label: string; module: string; action: stri
   { code: 'platform.roles.manage', label: 'Platforma rollarini boshqarish', module: 'platform_roles', action: 'manage' },
   { code: 'platform.users.view', label: 'Platforma foydalanuvchilari', module: 'platform_users', action: 'view' },
   { code: 'platform.users.manage', label: 'Platforma foydalanuvchilarini boshqarish', module: 'platform_users', action: 'manage' },
-  { code: 'platform.leads.view', label: "Demo zayavkalar ro'yxati", module: 'platform_leads', action: 'view' },
-  { code: 'platform.leads.manage', label: 'Zayavkalarni boshqarish', module: 'platform_leads', action: 'manage' },
+  { code: 'platform.leads.view', label: "Ledlar ro'yxati", module: 'platform_leads', action: 'view' },
+  { code: 'platform.leads.manage', label: 'Ledlarni boshqarish', module: 'platform_leads', action: 'manage' },
   { code: 'platform.settings.view', label: 'Sayt sozlamalari', module: 'platform_settings', action: 'view' },
   { code: 'platform.settings.manage', label: 'Sayt sozlamalarini boshqarish', module: 'platform_settings', action: 'manage' },
 ];
