@@ -22,6 +22,7 @@ const defaultHost = NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0';
 // PAYME_TEST_MODE=0 -> production: asosiy kalit + https://checkout.paycom.uz
 // Bitta o'zgaruvchi bilan butun oqim (auth kaliti + checkout sahifasi) almashadi.
 const PAYME_TEST_MODE = (process.env.PAYME_TEST_MODE ?? '1') === '1';
+const PAYME_MERCHANT_ID = process.env.PAYME_MERCHANT_ID ?? '';
 const PAYME_KEY = process.env.PAYME_KEY ?? '';
 const PAYME_TEST_KEY = process.env.PAYME_TEST_KEY ?? '';
 // Faol kalit — webhook Basic-auth tekshiruvida ishlatiladi.
@@ -35,6 +36,22 @@ const PAYME_ACTIVE_KEY = PAYME_SECRET_KEY || (PAYME_TEST_MODE ? PAYME_TEST_KEY :
 // PAYME_TEST_MODE faqat webhook auth kalitini almashtiradi, checkout manzilini emas.
 const PAYME_CHECKOUT_URL =
   (process.env.PAYME_CHECKOUT_URL ?? '').trim() || 'https://checkout.paycom.uz';
+// Subscribe API (karta tokenizatsiya + receipts) endpoint — JSON-RPC.
+// TEST_MODE=1 -> checkout.test.paycom.uz, aks holda checkout.paycom.uz. `/api` qo'shiladi.
+// MUHIM: endpoint `/api` bilan tugashi SHART (JSON-RPC). Berilgan qiymatda `/api`
+// bo'lmasa avtomatik qo'shamiz.
+const PAYME_SUBSCRIBE_URL = (() => {
+  const raw =
+    (process.env.PAYME_SUBSCRIBE_URL ?? '').trim() ||
+    (PAYME_TEST_MODE ? 'https://checkout.test.paycom.uz' : 'https://checkout.paycom.uz');
+  const trimmed = raw.replace(/\/+$/, '');
+  return /\/api$/.test(trimmed) ? trimmed : `${trimmed}/api`;
+})();
+// Subscribe API odatda alohida "Virtual terminal" kassasini talab qiladi (Merchant API
+// webhook kassasidan boshqa). Alohida berilmasa — asosiy merchant/kalitga tushadi.
+const PAYME_SUBSCRIBE_MERCHANT_ID =
+  (process.env.PAYME_SUBSCRIBE_MERCHANT_ID ?? '').trim() || PAYME_MERCHANT_ID;
+const PAYME_SUBSCRIBE_KEY = (process.env.PAYME_SUBSCRIBE_KEY ?? '').trim() || PAYME_ACTIVE_KEY;
 // Webhook uchun ruxsat etilgan IP'lar (vergul bilan; IP yoki CIDR). Bo'sh = barchasi.
 const PAYME_ALLOWED_IPS = (process.env.PAYME_ALLOWED_IPS ?? '')
   .split(',')
@@ -60,11 +77,14 @@ export const env = {
 
   // ===== Payme (Merchant API) =====
   PAYME_TEST_MODE, // true = sandbox, false = production
-  PAYME_MERCHANT_ID: process.env.PAYME_MERCHANT_ID ?? '',
+  PAYME_MERCHANT_ID,
   PAYME_KEY, // production kaliti
   PAYME_TEST_KEY, // sandbox kaliti
   PAYME_ACTIVE_KEY, // rejimga mos faol kalit (Basic-auth)
   PAYME_CHECKOUT_URL, // rejimga mos checkout sahifasi
+  PAYME_SUBSCRIBE_URL, // Subscribe API (cards/receipts) endpoint
+  PAYME_SUBSCRIBE_MERCHANT_ID, // Subscribe API kassa id (default: PAYME_MERCHANT_ID)
+  PAYME_SUBSCRIBE_KEY, // Subscribe API kassa kaliti (default: PAYME_ACTIVE_KEY)
   PAYME_ALLOWED_IPS, // ruxsat etilgan IP/CIDR ro'yxati (bo'sh = barchasi)
   // Payme account field nomi (checkout link uchun) — bizda subscription id
   PAYME_ACCOUNT_FIELD: process.env.PAYME_ACCOUNT_FIELD ?? 'subscription_id',

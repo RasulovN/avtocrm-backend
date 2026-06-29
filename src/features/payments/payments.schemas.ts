@@ -20,3 +20,22 @@ export const paymeRpcRequestSchema = z.object({
 });
 
 export type PaymeRpcRequestInput = z.infer<typeof paymeRpcRequestSchema>;
+
+// ─────────── Subscribe API (karta orqali to'lov) input sxemalari ───────────
+export const cardCreateSchema = z.object({
+  // Karta raqami (16 raqam; probel/chiziqlar olib tashlanadi)
+  number: z.string().transform((s) => s.replace(/\D/g, '')).pipe(z.string().min(16).max(20)),
+  // Amal qilish muddati MMYY (masalan "0399")
+  expire: z.string().transform((s) => s.replace(/\D/g, '')).pipe(z.string().length(4)),
+  save: z.boolean().optional(),
+});
+
+export const cardVerifySchema = z.object({
+  token: z.string().min(1),
+  code: z.string().transform((s) => s.replace(/\D/g, '')).pipe(z.string().min(4).max(8)),
+});
+
+export const subscribePaySchema = z.object({
+  subscription_id: z.number().int().positive(),
+  token: z.string().min(1),
+});

@@ -7,7 +7,12 @@ import {
   type PaymeRpcResponse,
   type PaymeRpcResult,
 } from './payme.types.js';
-import { paymeRpcRequestSchema } from './payments.schemas.js';
+import {
+  paymeRpcRequestSchema,
+  cardCreateSchema,
+  cardVerifySchema,
+  subscribePaySchema,
+} from './payments.schemas.js';
 import {
   checkPerformTransaction,
   createTransaction,
@@ -16,6 +21,14 @@ import {
   checkTransaction,
   getStatement,
 } from './payme.service.js';
+import {
+  cardsCreate,
+  cardsGetVerifyCode,
+  cardsVerify,
+  payForSubscription,
+  SubscribeError,
+} from './subscribe.service.js';
+import { serializeSubscription } from '../subscriptions/subscriptions.service.js';
 
 // ─────────────────────────────────────────────
 // Basic-auth tekshiruvi: Authorization: Basic base64("Paycom:" + PAYME_KEY)
@@ -203,9 +216,75 @@ const paymeWebhookHandler: RouteHandlerMethod = async (req, reply) => {
   }
 };
 
-// /api ostidagi route: POST /api/payments/payme/
+// SubscribeError -> 400 JSON (frontend uchun {detail}).
+function sendSubscribeError(reply: FastifyReply, err: unknown): FastifyReply {
+  if (err instanceof SubscribeError) {
+    return reply.status(400).send({ detail: err.message, code: err.code });
+  }
+  throw err; // boshqa xatolar -> global errorHandler
+}
+
+// /api ostidagi route'lar (prefix: /payments)
 export async function paymentsRoutes(app: FastifyInstance) {
+  // Merchant API webhook (eski yo'l, orqaga moslik): POST /api/payments/payme/
   app.post('/payme/', paymeWebhookHandler);
+
+  // ── Subscribe API (karta orqali to'lov) — kompaniya tomoni ──
+
+  // Frontend uchun ochiq config (merchant_id maxfiy emas).
+  app.get('/config', { onRequest: app.requireCompany }, async () => ({
+    merchant_id: env.PAYME_MERCHANT_ID,
+    test_mode: env.PAYME_TEST_MODE,
+    account_field: env.PAYME_ACCOUNT_FIELD,
+  }));
+
+  const guard = { onRequest: [app.requireCompany, app.requirePermission('company.subscription.manage')] };
+
+  // 1) Karta tokenizatsiyasi + OTP yuborish.
+  app.post('/card/create', guard, async (req, reply) => {
+    const body = cardCreateSchema.parse(req.body);
+    try {
+      const created = await cardsCreate(body.number, body.expire, body.save ?? false);
+      const card = created.card;
+      // Karta allaqachon tasdiqlangan bo'lsa OTP shart emas.
+      if (card.verify) {
+        return { token: card.token, need_verify: false, number: card.number, expire: card.expire };
+      }
+      const code = await cardsGetVerifyCode(card.token);
+      return {
+        token: card.token,
+        need_verify: true,
+        number: card.number,
+        expire: card.expire,
+        phone: code.phone,
+        wait: code.wait,
+      };
+    } catch (err) {
+      return sendSubscribeError(reply, err);
+    }
+  });
+
+  // 2) OTP tasdiqlash -> tasdiqlangan token qaytadi.
+  app.post('/card/verify', guard, async (req, reply) => {
+    const body = cardVerifySchema.parse(req.body);
+    try {
+      const verified = await cardsVerify(body.token, body.code);
+      return { token: verified.card.token, verify: verified.card.verify };
+    } catch (err) {
+      return sendSubscribeError(reply, err);
+    }
+  });
+
+  // 3) Token bilan to'lash -> obunani faollashtirish.
+  app.post('/pay', guard, async (req, reply) => {
+    const body = subscribePaySchema.parse(req.body);
+    try {
+      const sub = await payForSubscription(req.companyId!, body.subscription_id, body.token);
+      return { success: true, subscription: sub ? serializeSubscription(sub) : null };
+    } catch (err) {
+      return sendSubscribeError(reply, err);
+    }
+  });
 }
 
 // Ildiz route: POST /payme/webhook — Payme kabinetida ko'rsatilgan webhook manzili
