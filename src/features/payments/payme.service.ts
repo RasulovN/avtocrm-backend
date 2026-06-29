@@ -39,6 +39,16 @@ const MSG_UNABLE_TO_PERFORM = msg(
   "Amalni bajarib bo'lmaydi",
   'Unable to perform operation',
 );
+const MSG_ACCOUNT_BLOCKED = msg(
+  'Счёт уже оплачен или отменён',
+  "Hisob allaqachon to'langan yoki bekor qilingan",
+  'Account already paid or cancelled',
+);
+const MSG_ACCOUNT_BUSY = msg(
+  'Счёт занят другой транзакцией',
+  'Hisobni boshqa tranzaksiya band qilgan',
+  'Account is busy with another transaction',
+);
 const MSG_TRANSACTION_NOT_FOUND = msg(
   'Транзакция не найдена',
   'Tranzaksiya topilmadi',
@@ -55,8 +65,15 @@ export function buildCheckoutLink(subscription: Pick<Subscription, 'id' | 'amoun
 } {
   const amountTiyin = somToTiyin(subscription.amount as Prisma.Decimal);
   const field = env.PAYME_ACCOUNT_FIELD;
-  const raw = `m=${env.PAYME_MERCHANT_ID};ac.${field}=${subscription.id};a=${amountTiyin}`;
-  const encoded = Buffer.from(raw, 'utf8').toString('base64');
+  // Payme GET checkout: base64("m=...;ac.<field>=<id>;a=<tiyin>[;c=<callback>];cr=860;l=uz")
+  // cr=860 -> UZS, l=uz -> til. c (callback) faqat PUBLIC https domen bo'lsa qo'shiladi:
+  // Payme checkout localhost/http callback'ni rad etib, sahifani ochmasligi mumkin.
+  const fe = env.FRONTEND_URL.replace(/\/+$/, '');
+  const isPublicHttps = /^https:\/\//i.test(fe) && !/(localhost|127\.0\.0\.1|0\.0\.0\.0)/i.test(fe);
+  const parts = [`m=${env.PAYME_MERCHANT_ID}`, `ac.${field}=${subscription.id}`, `a=${amountTiyin}`];
+  if (isPublicHttps) parts.push(`c=${fe}/uz/subscription`);
+  parts.push('cr=860', 'l=uz');
+  const encoded = Buffer.from(parts.join(';'), 'utf8').toString('base64');
   return {
     checkout_url: `${env.PAYME_CHECKOUT_URL}/${encoded}`,
     amount_tiyin: amountTiyin,
@@ -88,15 +105,36 @@ async function findSubscriptionOrThrow(params: PaymeParams) {
   return subscription;
 }
 
-// CheckPerform mantiqi: obuna mavjud + amount mos. (status tekshiruvi qat'iy emas — qayta to'lov bloklanmasligi uchun)
-async function assertCanPerform(params: PaymeParams) {
+// Bir martalik hisob (one-time) mantiqi (Payme sandbox spetsifikatsiyasiga mos):
+//  - Не существует   -> AccountNotFound  (-31050)
+//  - Заблокирован    -> AccountBlocked   (-31051)  (obuna allaqachon to'langan/bekor)
+//  - Обрабатывается  -> AccountBusy      (-31052)  (boshqa tranzaksiya band qilgan)
+//  - Ожидает оплаты  -> ruxsat (keyin amount tekshiriladi; xato bo'lsa -31001)
+// `excludePaycomId` — CreateTransaction'da joriy tranzaksiyani "band" hisobidan chiqaradi.
+async function assertCanPerform(params: PaymeParams, excludePaycomId?: string) {
+  const field = env.PAYME_ACCOUNT_FIELD;
   const subscription = await findSubscriptionOrThrow(params);
 
-  // Allaqachon faollashtirilgan / bekor qilingan obunaga yangi to'lovni rad etamiz.
-  if (subscription.status !== 'pending' && subscription.status !== 'active') {
-    throw new PaymeRpcException(PaymeError.UnableToPerform, MSG_UNABLE_TO_PERFORM);
+  // Bloklangan: obuna pending emas (allaqachon active/expired/cancelled).
+  if (subscription.status !== 'pending') {
+    throw new PaymeRpcException(PaymeError.AccountBlocked, MSG_ACCOUNT_BLOCKED, field);
   }
 
+  // Shu obunaga tegishli mavjud tranzaksiyalar.
+  const txs = await prisma.paymeTransaction.findMany({
+    where: { subscriptionId: subscription.id },
+    select: { paycomId: true, state: true },
+  });
+  // Allaqachon bajarilgan tranzaksiya bo'lsa — bloklangan.
+  if (txs.some((t) => t.state === PaymeState.Performed)) {
+    throw new PaymeRpcException(PaymeError.AccountBlocked, MSG_ACCOUNT_BLOCKED, field);
+  }
+  // Boshqa (joriy emas) ochiq tranzaksiya band qilgan bo'lsa — busy.
+  if (txs.some((t) => t.state === PaymeState.Created && t.paycomId !== excludePaycomId)) {
+    throw new PaymeRpcException(PaymeError.AccountBusy, MSG_ACCOUNT_BUSY, field);
+  }
+
+  // Hisob to'g'ri — endi summa tekshiriladi.
   const expectedTiyin = somToTiyin(subscription.amount);
   if (params.amount !== expectedTiyin) {
     throw new PaymeRpcException(PaymeError.WrongAmount, MSG_WRONG_AMOUNT);
@@ -135,8 +173,8 @@ export async function createTransaction(params: PaymeParams): Promise<PaymeRpcRe
     };
   }
 
-  // Yangi tranzaksiya — qayta tekshiramiz.
-  const { subscription, expectedTiyin } = await assertCanPerform(params);
+  // Yangi tranzaksiya — qayta tekshiramiz (joriy id "band" hisobidan chiqariladi).
+  const { subscription, expectedTiyin } = await assertCanPerform(params, paycomId);
   const createTime = params.time ?? nowMs();
 
   const created = await prisma.paymeTransaction.create({

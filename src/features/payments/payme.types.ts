@@ -21,7 +21,9 @@ export const PaymeError = {
   TransactionNotFound: -31003,
   UnableToPerform: -31008,
   // Account xatolari (-31050..-31099)
-  AccountNotFound: -31050,
+  AccountNotFound: -31050, // hisob/obuna topilmadi (Не существует)
+  AccountBlocked: -31051, // hisob bloklangan: allaqachon to'langan/bekor (Заблокирован)
+  AccountBusy: -31052, // hisobni boshqa tranzaksiya band qilgan (Обрабатывается)
   AccountGeneric: -31099,
 } as const;
 

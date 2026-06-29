@@ -11,6 +11,7 @@ import { authPlugin } from './plugins/auth.js';
 import { auditPlugin } from './plugins/audit.js';
 import { errorHandler } from './plugins/errorHandler.js';
 import { registerRoutes } from './features/index.js';
+import { paymeWebhookRoutes } from './features/payments/payments.routes.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -20,6 +21,9 @@ export async function buildApp(): Promise<FastifyInstance> {
     bodyLimit: 20 * 1024 * 1024,
     // Django trailing-slash URL'lari bilan moslik uchun
     routerOptions: { ignoreTrailingSlash: true },
+    // nginx reverse-proxy orqasida real mijoz IP'si X-Forwarded-For'dan olinadi
+    // (Payme IP whitelist uchun zarur). Backend faqat 127.0.0.1'da, nginx ishonchli.
+    trustProxy: true,
   });
 
   await app.register(cors, {
@@ -57,6 +61,9 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Barcha modul route'lari /api ostida
   await app.register(registerRoutes, { prefix: '/api' });
+
+  // Payme webhook — /api prefiksisiz, kabinetdagi manzilga mos (POST /payme/webhook)
+  await app.register(paymeWebhookRoutes);
 
   app.get('/health', async () => ({ status: 'ok' }));
 

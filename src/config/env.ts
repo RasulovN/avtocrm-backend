@@ -17,6 +17,30 @@ const NODE_ENV = process.env.NODE_ENV ?? 'development';
 // .env'da HOST aniq berilsa, o'sha ustun bo'ladi.
 const defaultHost = NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0';
 
+// ===== Payme rejimi (test / production) =====
+// PAYME_TEST_MODE=1 -> sandbox: test kalit + https://test.paycom.uz
+// PAYME_TEST_MODE=0 -> production: asosiy kalit + https://checkout.paycom.uz
+// Bitta o'zgaruvchi bilan butun oqim (auth kaliti + checkout sahifasi) almashadi.
+const PAYME_TEST_MODE = (process.env.PAYME_TEST_MODE ?? '1') === '1';
+const PAYME_KEY = process.env.PAYME_KEY ?? '';
+const PAYME_TEST_KEY = process.env.PAYME_TEST_KEY ?? '';
+// Faol kalit — webhook Basic-auth tekshiruvida ishlatiladi.
+// Agar bitta PAYME_SECRET_KEY berilsa (boshqa loyihalardagi kabi), o'sha ishlatiladi;
+// aks holda rejimga (TEST_MODE) qarab test yoki prod kaliti tanlanadi.
+const PAYME_SECRET_KEY = process.env.PAYME_SECRET_KEY ?? '';
+const PAYME_ACTIVE_KEY = PAYME_SECRET_KEY || (PAYME_TEST_MODE ? PAYME_TEST_KEY : PAYME_KEY);
+// Checkout sahifasi (mijozni to'lovga yo'naltirish) — DOIM https://checkout.paycom.uz.
+// DIQQAT: test.paycom.uz bu checkout EMAS, balki Merchant API sandbox konsoli — u yerga
+// mijoz yo'naltirilmaydi. Test kassada checkout.paycom.uz test kartalarini ko'rsatadi.
+// PAYME_TEST_MODE faqat webhook auth kalitini almashtiradi, checkout manzilini emas.
+const PAYME_CHECKOUT_URL =
+  (process.env.PAYME_CHECKOUT_URL ?? '').trim() || 'https://checkout.paycom.uz';
+// Webhook uchun ruxsat etilgan IP'lar (vergul bilan; IP yoki CIDR). Bo'sh = barchasi.
+const PAYME_ALLOWED_IPS = (process.env.PAYME_ALLOWED_IPS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 export const env = {
   NODE_ENV,
   PORT: Number(process.env.PORT ?? 8000),
@@ -35,10 +59,13 @@ export const env = {
   EMAIL_VERIFICATION_TTL: Number(process.env.EMAIL_VERIFICATION_TTL ?? 60 * 60 * 24), // 24 soat
 
   // ===== Payme (Merchant API) =====
+  PAYME_TEST_MODE, // true = sandbox, false = production
   PAYME_MERCHANT_ID: process.env.PAYME_MERCHANT_ID ?? '',
-  PAYME_KEY: process.env.PAYME_KEY ?? '', // webhook Basic-auth paroli (X-Auth)
-  PAYME_TEST_KEY: process.env.PAYME_TEST_KEY ?? '',
-  PAYME_CHECKOUT_URL: process.env.PAYME_CHECKOUT_URL ?? 'https://checkout.paycom.uz',
+  PAYME_KEY, // production kaliti
+  PAYME_TEST_KEY, // sandbox kaliti
+  PAYME_ACTIVE_KEY, // rejimga mos faol kalit (Basic-auth)
+  PAYME_CHECKOUT_URL, // rejimga mos checkout sahifasi
+  PAYME_ALLOWED_IPS, // ruxsat etilgan IP/CIDR ro'yxati (bo'sh = barchasi)
   // Payme account field nomi (checkout link uchun) — bizda subscription id
   PAYME_ACCOUNT_FIELD: process.env.PAYME_ACCOUNT_FIELD ?? 'subscription_id',
 
