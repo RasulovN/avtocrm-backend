@@ -4,6 +4,7 @@ import { NotFound } from '../../common/errors.js';
 import { sendMail } from '../../common/email.js';
 import { env } from '../../config/env.js';
 import { pushNotifications } from '../notifications/notification.service.js';
+import { emitToSuperadmins } from '../../realtime/io.js';
 import {
   normalizeSource,
   LEAD_STATUSES,
@@ -32,6 +33,9 @@ export function serializeLead(l: Lead) {
 
 // Super adminlarni yangi zayavka haqida xabardor qiladi (DB + socket).
 async function notifySuperAdmins(lead: Lead): Promise<void> {
+  // Leads sahifasini jonli yangilash uchun — barcha ulangan super adminlarga.
+  emitToSuperadmins('lead:new', serializeLead(lead));
+
   const admins = await prisma.user.findMany({
     where: { isSuperuser: true, isActive: true },
     select: { id: true },
@@ -41,7 +45,7 @@ async function notifySuperAdmins(lead: Lead): Promise<void> {
     userIds: admins.map((a) => a.id),
     type: 'lead',
     title: 'Yangi demo zayavka',
-    message: `${lead.name}${lead.company ? ` · ${lead.company}` : ''} · ${lead.phone}`,
+    message: `${lead.name}${lead.company ? ` · ${lead.company}` : ''} · ${lead.phone || lead.email}`,
     link: '/admin/leads',
   });
 }
@@ -125,8 +129,9 @@ export async function createLead(data: LeadCreateInput): Promise<Lead> {
   const lead = await prisma.lead.create({
     data: {
       name: data.name.trim(),
-      phone: data.phone.trim(),
-      email: data.email.trim(),
+      // Email yoki telefon — biri bo'lmasa bo'sh saqlanadi (ustun NOT NULL).
+      phone: data.phone?.trim() || '',
+      email: data.email?.trim() || '',
       company: data.company?.trim() || null,
       storesRange: data.stores_range?.trim() || null,
       message: data.message?.trim() || null,

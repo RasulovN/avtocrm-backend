@@ -11,6 +11,7 @@ import { subscriptionsRoutes } from './subscriptions/subscriptions.routes.js';
 import { paymentsRoutes } from './payments/payments.routes.js';
 import { notificationsRoutes } from './notifications/notifications.routes.js';
 import { auditRoutes } from './audit/audit.routes.js';
+import { supportRoutes } from './support/support.routes.js';
 
 // ===== CRM (tenant) =====
 import { usersRoutes } from './users/users.routes.js';
@@ -37,6 +38,7 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(paymentsRoutes, { prefix: '/payments' });
   await app.register(notificationsRoutes, { prefix: '/notifications' });
   await app.register(auditRoutes, { prefix: '/audit' });
+  await app.register(supportRoutes, { prefix: '/support' });
   await app.register(leadsRoutes, { prefix: '/leads' });
   await app.register(siteSettingsRoutes, { prefix: '/site-settings' });
 

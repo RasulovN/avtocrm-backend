@@ -87,3 +87,15 @@ export function emitToUsers(userIds: number[], event: string, payload: unknown):
     io.to(`user:${id}`).emit(event, payload);
   }
 }
+
+// Bitta xonaga event yuboradi (masalan `user:5`, `company:3`, `superadmins`).
+export function emitToRoom(room: string, event: string, payload: unknown): void {
+  if (!io) return;
+  io.to(room).emit(event, payload);
+}
+
+// Barcha super adminlarga (support operatorlari) event yuboradi.
+export function emitToSuperadmins(event: string, payload: unknown): void {
+  if (!io) return;
+  io.to('superadmins').emit(event, payload);
+}

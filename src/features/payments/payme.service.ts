@@ -9,6 +9,7 @@ import {
   type PaymeParams,
   type PaymeRpcResult,
 } from './payme.types.js';
+import { computeActivationWindow } from '../subscriptions/subscription.window.js';
 
 // ─────────────────────────────────────────────
 // Yordamchilar
@@ -238,8 +239,12 @@ export async function performTransaction(params: PaymeParams): Promise<PaymeRpcR
         include: { plan: true },
       });
       if (subscription) {
-        const startAt = new Date(performTime);
-        const endAt = new Date(performTime + subscription.plan.durationDays * 24 * 60 * 60 * 1000);
+        // Oldindan to'langan oylar (periodMonths) + muddatni uzaytirish hisobga olinadi.
+        const { startAt, endAt } = await computeActivationWindow(
+          tx,
+          subscription,
+          new Date(performTime),
+        );
         await tx.subscription.update({
           where: { id: subscription.id },
           data: { status: 'active', startAt, endAt },

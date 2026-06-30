@@ -28,16 +28,37 @@ export function normalizeSource(s: unknown, fallback: LeadSource = 'website'): L
 }
 
 // Landing "Demo so'rash" formasi — ommaviy (autentifikatsiyasiz).
-export const leadCreateSchema = z.object({
-  name: z.string().min(1).max(150),
-  phone: z.string().min(3).max(50),
-  email: z.string().email().max(150),
-  company: z.string().max(150).nullish(),
-  stores_range: z.string().max(50).nullish(),
-  message: z.string().max(2000).nullish(),
-  locale: z.string().max(10).nullish(),
-  source: z.string().max(50).nullish(), // "qayerdan bildingiz" — kanal kodi
-});
+// Email YOKI telefon — ikkalasidan kamida bittasi majburiy (ikkalasi ham emas).
+export const leadCreateSchema = z
+  .object({
+    name: z.string().min(1).max(150),
+    phone: z.string().max(50).nullish(),
+    email: z.string().max(150).nullish(),
+    company: z.string().max(150).nullish(),
+    stores_range: z.string().max(50).nullish(),
+    message: z.string().max(2000).nullish(),
+    locale: z.string().max(10).nullish(),
+    source: z.string().max(50).nullish(), // "qayerdan bildingiz" — kanal kodi
+  })
+  .superRefine((d, ctx) => {
+    const phone = d.phone?.trim() ?? '';
+    const email = d.email?.trim() ?? '';
+    if (!phone && !email) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Email yoki telefon raqamidan kamida bittasini kiriting.',
+        path: ['email'],
+      });
+    }
+    // Email kiritilgan bo'lsa — to'g'ri formatda bo'lsin.
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Email noto'g'ri formatda.",
+        path: ['email'],
+      });
+    }
+  });
 
 export const LEAD_STATUSES = ['new', 'approved', 'rejected', 'contacted', 'closed'] as const;
 

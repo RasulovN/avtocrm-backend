@@ -7,6 +7,8 @@ import { sendMail } from '../../common/email.js';
 import { noticeEmailHtml } from '../../common/emailTemplates.js';
 import { env } from '../../config/env.js';
 import { pushNotifications } from '../notifications/notification.service.js';
+import { computeActivationWindow } from './subscription.window.js';
+import { ALLOWED_MONTHS } from './subscriptions.schemas.js';
 
 // ─────────────────────────────────────────────
 // Obuna holati o'zgarganda kompaniyaga bildirishnoma (tizim) + email.
@@ -107,6 +109,7 @@ export function serializeSubscription(s: SubscriptionWithRelations) {
     plan_duration_days: s.plan?.durationDays ?? null,
     status: s.status,
     amount: decimalToString(s.amount),
+    period_months: s.periodMonths,
     start_at: s.startAt,
     end_at: s.endAt,
     created_at: s.createdAt,
@@ -133,26 +136,72 @@ function isActiveSub(s: { status: string; endAt: Date | null }): boolean {
 // ─────────────────────────────────────────────
 // POST / — kompaniya obuna yaratadi + Payme checkout havolasi.
 // ─────────────────────────────────────────────
-export async function createSubscription(companyId: number, planId: number) {
+export async function createSubscription(companyId: number, planId: number, months = 1) {
   const plan = await prisma.plan.findUnique({ where: { id: planId } });
   if (!plan || !plan.isActive) {
     throw new BadRequest({ detail: 'Tanlangan tarif topilmadi yoki faol emas.' });
   }
 
-  const subscription = await prisma.subscription.create({
-    data: {
-      companyId,
-      planId: plan.id,
-      status: 'pending',
-      amount: plan.price,
-      startAt: null,
-      endAt: null,
-    },
+  const isFree = plan.price.lessThanOrEqualTo(0);
+
+  // Oylar sonini normallashtiramiz: bepul tarif har doim 1 oy, pullik — 1/3/6/12.
+  const periodMonths = isFree
+    ? 1
+    : (ALLOWED_MONTHS as readonly number[]).includes(months)
+      ? months
+      : 1;
+
+  // ── BEPUL tarif: har bir kompaniya uchun FAQAT BIR MARTA ──
+  // Bepul obuna `amount <= 0` bilan aniqlanadi (narx snapshot'i).
+  if (isFree) {
+    const existingFree = await prisma.subscription.findFirst({
+      where: { companyId, amount: { lte: 0 } },
+      include: { plan: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (existingFree) {
+      // Allaqachon faollashtirilgan/tugagan/bekor qilingan bo'lsa — qayta bermaymiz.
+      if (existingFree.status !== 'pending') {
+        throw new BadRequest({
+          detail: 'Bepul tarifdan faqat bir marta foydalanish mumkin. Iltimos, pullik tarifni tanlang.',
+        });
+      }
+      // Hali tasdiqlanmagan so'rov bo'lsa — o'shani qaytaramiz (dublikat yaratmaymiz).
+      return {
+        subscription: serializeSubscription(existingFree),
+        free: true,
+        checkout_url: null,
+        message: 'Bepul tarif so\'rovi allaqachon yuborilgan. Administrator tasdiqlashini kuting.',
+      };
+    }
+  }
+
+  // Jami summa = tarif narxi * oylar soni.
+  const amount = isFree ? plan.price : plan.price.mul(periodMonths);
+
+  // Mavjud to'lanmagan (pending) bir xil so'rovni qayta ishlatamiz — dublikatlar oldini olish.
+  const existingPending = await prisma.subscription.findFirst({
+    where: { companyId, planId: plan.id, status: 'pending', amount },
     include: { plan: true },
+    orderBy: { createdAt: 'desc' },
   });
 
+  const subscription =
+    existingPending ??
+    (await prisma.subscription.create({
+      data: {
+        companyId,
+        planId: plan.id,
+        status: 'pending',
+        amount,
+        periodMonths,
+        startAt: null,
+        endAt: null,
+      },
+      include: { plan: true },
+    }));
+
   // BEPUL tarif (narx 0): Payme'ga o'tmaydi — pending qoladi, super admin tasdiqlaydi.
-  const isFree = plan.price.lessThanOrEqualTo(0);
   if (isFree) {
     return {
       subscription: serializeSubscription(subscription),
@@ -163,7 +212,7 @@ export async function createSubscription(companyId: number, planId: number) {
     };
   }
 
-  // PULLIK tarif: Payme checkout havolasi.
+  // PULLIK tarif: Payme checkout havolasi (summa allaqachon oylarga ko'paytirilgan).
   const checkout = buildCheckoutLink(subscription);
 
   return {
@@ -219,6 +268,61 @@ export async function getMyActiveSubscription(companyId: number) {
 }
 
 // ─────────────────────────────────────────────
+// GET /me/history/ — kompaniyaning to'lovlar/obuna tarixi (pagination).
+// ─────────────────────────────────────────────
+export async function listMyPaymentHistory(companyId: number, page: PageParams) {
+  const where: Prisma.SubscriptionWhereInput = { companyId };
+  const [rows, count] = await Promise.all([
+    prisma.subscription.findMany({
+      where,
+      include: { plan: true },
+      orderBy: { createdAt: 'desc' },
+      skip: page.skip,
+      take: page.take,
+    }),
+    prisma.subscription.count({ where }),
+  ]);
+  return { results: rows.map(serializeSubscription), count };
+}
+
+// ─────────────────────────────────────────────
+// POST /me/:id/cancel — kompaniya admini o'z KUTILAYOTGAN (pending) obunasini bekor qiladi.
+// Faqat status='pending' bo'lganlar bekor qilinadi (to'langan obuna emas).
+// ─────────────────────────────────────────────
+export async function cancelMyPendingSubscription(companyId: number, id: number) {
+  const subscription = await prisma.subscription.findFirst({
+    where: { id, companyId },
+    include: { plan: true },
+  });
+  if (!subscription) throw new NotFound({ detail: 'Obuna topilmadi.' });
+  if (subscription.status !== 'pending') {
+    throw new BadRequest({
+      detail: 'Faqat kutilayotgan (pending) to\'lovlarni bekor qilish mumkin.',
+    });
+  }
+
+  // Allaqachon bajarilgan (Performed) Payme tranzaksiyasi bo'lsa — bekor qilmaymiz.
+  const performed = await prisma.paymeTransaction.findFirst({
+    where: { subscriptionId: id, state: 2 },
+    select: { id: true },
+  });
+  if (performed) {
+    throw new BadRequest({
+      detail: 'Bu obuna uchun to\'lov amalga oshirilgan — bekor qilib bo\'lmaydi.',
+    });
+  }
+
+  const updated = await prisma.subscription.update({
+    where: { id },
+    data: { status: 'cancelled' },
+    include: { plan: true, company: { select: { id: true, name: true } } },
+  });
+  // Bildirishnoma + email (faollashtirilmadi/bekor qilindi).
+  try { await notifySubscriptionEvent(id, false); } catch { /* ignore */ }
+  return serializeSubscription(updated);
+}
+
+// ─────────────────────────────────────────────
 // GET / — super admin: barcha obunalar (filter + pagination).
 // ─────────────────────────────────────────────
 export async function listAllSubscriptions(
@@ -260,12 +364,13 @@ export async function patchSubscription(
   if (!subscription) throw new NotFound({ detail: 'Obuna topilmadi.' });
 
   if (action === 'activate') {
-    const now = new Date();
-    const endAt = new Date(now.getTime() + subscription.plan.durationDays * 24 * 60 * 60 * 1000);
     const updated = await prisma.$transaction(async (tx) => {
+      // Oldindan to'lov/uzaytirish logikasi: agar shu tarif bo'yicha tugamagan
+      // obuna bo'lsa muddat o'sha tugash sanasidan boshlab qo'shiladi.
+      const { startAt, endAt } = await computeActivationWindow(tx, subscription);
       const sub = await tx.subscription.update({
         where: { id },
-        data: { status: 'active', startAt: now, endAt },
+        data: { status: 'active', startAt, endAt },
         include: { plan: true, company: { select: { id: true, name: true } } },
       });
       await tx.company.update({

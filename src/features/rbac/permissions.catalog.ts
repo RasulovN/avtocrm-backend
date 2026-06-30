@@ -102,6 +102,8 @@ const PLATFORM_DEFS: { code: string; label: string; module: string; action: stri
   { code: 'platform.users.manage', label: 'Platforma foydalanuvchilarini boshqarish', module: 'platform_users', action: 'manage' },
   { code: 'platform.leads.view', label: "Ledlar ro'yxati", module: 'platform_leads', action: 'view' },
   { code: 'platform.leads.manage', label: 'Ledlarni boshqarish', module: 'platform_leads', action: 'manage' },
+  { code: 'platform.support.view', label: "Qo'llab-quvvatlash chatlari", module: 'platform_support', action: 'view' },
+  { code: 'platform.support.manage', label: "Qo'llab-quvvatlashga javob berish", module: 'platform_support', action: 'manage' },
   { code: 'platform.settings.view', label: 'Sayt sozlamalari', module: 'platform_settings', action: 'view' },
   { code: 'platform.settings.manage', label: 'Sayt sozlamalarini boshqarish', module: 'platform_settings', action: 'manage' },
 ];

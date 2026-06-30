@@ -8,6 +8,8 @@ import {
   createSubscription,
   listMySubscriptions,
   getMyActiveSubscription,
+  listMyPaymentHistory,
+  cancelMyPendingSubscription,
   listAllSubscriptions,
   patchSubscription,
 } from './subscriptions.service.js';
@@ -23,7 +25,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const body = subscriptionCreateSchema.parse(req.body);
-      const result = await createSubscription(req.companyId!, body.plan_id);
+      const result = await createSubscription(req.companyId!, body.plan_id, body.months ?? 1);
       return reply.status(201).send(result);
     },
   );
@@ -37,6 +39,23 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
   app.get('/me/active/', { onRequest: app.requireCompany }, async (req) => {
     return getMyActiveSubscription(req.companyId!);
   });
+
+  // GET /me/history/ — to'lovlar/obuna tarixi (pagination).
+  app.get('/me/history/', { onRequest: app.requireCompany }, async (req) => {
+    const page = getPageParams(req);
+    const { results, count } = await listMyPaymentHistory(req.companyId!, page);
+    return paginate(req, results, count, page);
+  });
+
+  // POST /me/:id/cancel/ — kompaniya admini kutilayotgan (pending) to'lovni bekor qiladi.
+  app.post(
+    '/me/:id/cancel/',
+    { onRequest: [app.requireCompany, app.requirePermission('company.subscription.manage')] },
+    async (req) => {
+      const id = Number((req.params as { id: string }).id);
+      return cancelMyPendingSubscription(req.companyId!, id);
+    },
+  );
 
   // ===================== Super admin tomoni =====================
 

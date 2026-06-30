@@ -7,6 +7,7 @@ import { prisma } from '../../db/prisma.js';
 import { env } from '../../config/env.js';
 import { BadRequest } from '../../common/errors.js';
 import { PaymeState } from './payme.types.js';
+import { computeActivationWindow } from '../subscriptions/subscription.window.js';
 
 export class SubscribeError extends Error {
   code: number;
@@ -144,8 +145,8 @@ export async function payForSubscription(companyId: number, subscriptionId: numb
         account: account as Prisma.InputJsonValue,
       },
     });
-    const startAt = new Date(performTime);
-    const endAt = new Date(performTime + subscription.plan.durationDays * 24 * 60 * 60 * 1000);
+    // Oldindan to'langan oylar (periodMonths) + muddatni uzaytirish hisobga olinadi.
+    const { startAt, endAt } = await computeActivationWindow(tx, subscription, new Date(performTime));
     await tx.subscription.update({ where: { id: subscription.id }, data: { status: 'active', startAt, endAt } });
     await tx.company.update({ where: { id: subscription.companyId }, data: { status: 'active' } });
   });
