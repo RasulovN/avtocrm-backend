@@ -39,7 +39,7 @@ const PORT = process.env.PORT ?? '8000';
 const [, , argMethod, argSubId, argAmount] = process.argv;
 
 const METHOD = argMethod ?? 'CheckPerformTransaction';
-const SUB_ID = argSubId ?? process.env.PAYME_TEST_SUB_ID ?? '43';
+const SUB_ID = argSubId ?? process.env.PAYME_TEST_SUB_ID ?? '1';
 const AMOUNT = Number(argAmount ?? process.env.PAYME_TEST_AMOUNT ?? 9_900_000);
 
 const WEBHOOK_URL =
