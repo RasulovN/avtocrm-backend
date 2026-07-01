@@ -40,3 +40,9 @@ export class ValidationError extends ApiError {
     super(400, payload);
   }
 }
+
+export class TooManyRequests extends ApiError {
+  constructor(payload: unknown = { detail: 'Juda ko\'p urinish. Iltimos birozdan so\'ng qayta urinib ko\'ring.' }) {
+    super(429, payload);
+  }
+}

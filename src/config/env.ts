@@ -9,6 +9,26 @@ function required(name: string, fallback?: string): string {
 }
 
 const NODE_ENV = process.env.NODE_ENV ?? 'development';
+const IS_PROD = NODE_ENV === 'production';
+
+// SECRET_KEY — JWT imzolash kaliti. Production'da MAJBURIY va kuchli bo'lishi shart.
+// Zaif/default (django-insecure...) kalitlar bilan ishga tushirishga yo'l qo'ymaymiz,
+// aks holda tajovuzkor istalgan foydalanuvchi uchun token soxtalashtira oladi.
+function resolveSecretKey(): string {
+  const key = process.env.SECRET_KEY;
+  if (IS_PROD) {
+    if (!key) throw new Error('SECRET_KEY production uchun majburiy');
+    if (key.length < 32 || key.startsWith('django-insecure') || key === 'change-me-in-production') {
+      throw new Error(
+        'SECRET_KEY zaif yoki default. Production uchun kamida 32 belgili tasodifiy kalit bering ' +
+          "(masalan: node -e \"console.log(require('crypto').randomBytes(48).toString('base64url'))\").",
+      );
+    }
+    return key;
+  }
+  // Development: qulaylik uchun fallback ruxsat.
+  return key ?? 'dev-only-insecure-secret-key-change-in-production';
+}
 
 // HOST default rejimga bog'liq:
 //  - production: 127.0.0.1 — faqat localhost. Backend reverse-proxy (nginx) orqasida
@@ -63,7 +83,7 @@ export const env = {
   PORT: Number(process.env.PORT ?? 8000),
   HOST: process.env.HOST ?? defaultHost,
 
-  SECRET_KEY: required('SECRET_KEY', 'change-me-in-production'),
+  SECRET_KEY: resolveSecretKey(),
   ACCESS_TOKEN_TTL: Number(process.env.ACCESS_TOKEN_TTL ?? 60 * 60 * 24), // 1 day
   REFRESH_TOKEN_TTL: Number(process.env.REFRESH_TOKEN_TTL ?? 60 * 60 * 24 * 7), // 7 days
 

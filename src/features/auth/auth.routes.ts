@@ -1,8 +1,10 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { prisma } from '../../db/prisma.js';
 import { checkPassword, hashPassword } from '../../common/password.js';
-import { createTokens, accessFromRefresh } from '../../common/jwt.js';
+import { createTokens, accessFromRefresh, verifyAccess } from '../../common/jwt.js';
 import { setAuthCookies, clearAuthCookies } from '../../common/cookies.js';
+import { revokeToken } from '../../common/tokenBlacklist.js';
+import { rateLimit } from '../../plugins/rateLimit.js';
 import { sendMail } from '../../common/email.js';
 import { makeToken, checkToken, encodeUid, decodeUid } from '../../common/passwordReset.js';
 import { BadRequest, Unauthorized, ValidationError } from '../../common/errors.js';
@@ -41,11 +43,32 @@ function clientMeta(req: FastifyRequest): {
   };
 }
 
+// So'rovdagi access token'ni (cookie yoki Bearer) qaytaradi.
+function extractToken(req: FastifyRequest): string | null {
+  const cookieToken = (req.cookies as Record<string, string | undefined>)?.access_token;
+  if (cookieToken) return cookieToken;
+  const header = req.headers.authorization;
+  if (header && header.startsWith('Bearer ')) return header.slice(7);
+  return null;
+}
+
+// Logout: joriy access token'ni bekor qiladi (blacklist).
+function revokeCurrentToken(req: FastifyRequest): void {
+  const token = extractToken(req);
+  if (!token) return;
+  try {
+    const payload = verifyAccess(token);
+    if (payload.jti && payload.exp) revokeToken(payload.jti, payload.exp);
+  } catch {
+    /* yaroqsiz token — e'tiborsiz */
+  }
+}
+
 // Prefix `/auth` index.ts da beriladi — bu yerda nisbiy path.
 export async function authRoutes(app: FastifyInstance) {
   // ===================== Ro'yxatdan o'tish =====================
   // Sodda: faqat email + parol. Kompaniya/biznes ma'lumotlari keyin (onboarding).
-  app.post('/register/', async (req, reply) => {
+  app.post('/register/', { onRequest: rateLimit({ name: 'auth-register', max: 5, windowMs: 15 * 60_000 }) }, async (req, reply) => {
     const body = registerSchema.parse(req.body);
 
     // Email noyob bo'lishi shart.
@@ -92,7 +115,7 @@ export async function authRoutes(app: FastifyInstance) {
 
   // ===================== Tasdiqlash xatini qayta yuborish =====================
   // Javob xavfsiz: email mavjudligini oshkor qilmaydi.
-  app.post('/resend-verification/', async (req, reply) => {
+  app.post('/resend-verification/', { onRequest: rateLimit({ name: 'auth-resend', max: 5, windowMs: 15 * 60_000 }) }, async (req, reply) => {
     const body = resendVerificationSchema.parse(req.body);
 
     const user = await prisma.user.findUnique({ where: { email: body.email } });
@@ -108,7 +131,7 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   // ===================== Kirish (telefon YOKI email) =====================
-  app.post('/login/', async (req, reply) => {
+  app.post('/login/', { onRequest: rateLimit({ name: 'auth-login', max: 10, windowMs: 5 * 60_000 }) }, async (req, reply) => {
     const body = loginSchema.parse(req.body);
 
     // login = telefon raqami YOKI email. Ikkalasi bo'yicha qidiramiz.
@@ -158,6 +181,7 @@ export async function authRoutes(app: FastifyInstance) {
 
   // ===================== Chiqish =====================
   app.post('/logout/', { onRequest: app.authenticate }, async (req, reply) => {
+    revokeCurrentToken(req);
     clearAuthCookies(reply);
     const meta = clientMeta(req);
     await prisma.userHistory.create({
@@ -252,7 +276,7 @@ export async function authRoutes(app: FastifyInstance) {
 
   // ===================== Parolni unutdim =====================
   // Javob xavfsiz: email mavjudligini oshkor qilmaydi.
-  app.post('/forgot-password/', async (req, reply) => {
+  app.post('/forgot-password/', { onRequest: rateLimit({ name: 'auth-forgot', max: 5, windowMs: 15 * 60_000 }) }, async (req, reply) => {
     const body = forgotPasswordSchema.parse(req.body);
 
     const user = await prisma.user.findUnique({ where: { email: body.email } });
@@ -278,7 +302,7 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   // ===================== Parolni tiklash =====================
-  app.post('/reset-password/', async (req, reply) => {
+  app.post('/reset-password/', { onRequest: rateLimit({ name: 'auth-reset', max: 10, windowMs: 15 * 60_000 }) }, async (req, reply) => {
     const body = resetPasswordSchema.parse(req.body);
 
     const userId = decodeUid(body.uid);

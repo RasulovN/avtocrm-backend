@@ -20,8 +20,10 @@ import {
 } from './support.service.js';
 
 // Ruxsat etilgan fayl turlari (kengaytma bo'yicha) — rasm va keng tarqalgan hujjatlar.
+// DIQQAT: `.svg` va `.html` ATAYIN yo'q — ular skript o'z ichiga olib, media
+// domenidan ochilganda saqlangan XSS'ga olib kelishi mumkin.
 const ALLOWED_EXT = new Set([
-  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.heic',
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic',
   '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.txt',
   '.zip', '.rar', '.mp4', '.mov', '.webm', '.mp3', '.ogg', '.wav',
 ]);
@@ -60,8 +62,9 @@ export async function supportRoutes(app: FastifyInstance) {
     for await (const part of parts) {
       const original = part.filename || 'file';
       const ext = safeExt(original);
-      if (ext && !ALLOWED_EXT.has(ext)) {
-        throw new BadRequest({ detail: `Ruxsat etilmagan fayl turi: ${ext}` });
+      // Kengaytmasiz yoki ro'yxatda yo'q fayllar rad etiladi (bo'sh ext bypass'ining oldini oladi).
+      if (!ext || !ALLOWED_EXT.has(ext)) {
+        throw new BadRequest({ detail: `Ruxsat etilmagan fayl turi: ${ext || '(nomaʼlum)'}` });
       }
       const buf = await part.toBuffer(); // multipart limit (20MB) bu yerda qo'llanadi
       const stored = `${Date.now()}-${randomUUID().slice(0, 8)}${ext}`;

@@ -10,12 +10,16 @@ export interface AccessPayload {
   token_type: 'access';
   user_id: number;
   jti: string;
+  iat?: number;
+  exp?: number;
 }
 
 export interface RefreshPayload {
   token_type: 'refresh';
   user_id: number;
   jti: string;
+  iat?: number;
+  exp?: number;
 }
 
 export function createTokens(userId: number): { access: string; refresh: string } {

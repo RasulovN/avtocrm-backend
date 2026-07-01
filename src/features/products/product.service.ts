@@ -1,10 +1,11 @@
 import type { Prisma, Product } from '@prisma/client';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, extname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '../../db/prisma.js';
 import { NotFound, ValidationError } from '../../common/errors.js';
 import { mediaUrl } from '../../common/media.js';
+import { resolveImageExtension } from '../../common/uploads.js';
 import type { PageParams } from '../../common/pagination.js';
 import { env } from '../../config/env.js';
 import { generateBarcodeImage, generateUniqueBarcode, normalizeBarcode } from './barcode.js';
@@ -31,7 +32,9 @@ async function saveProductImage(image: UploadedImage, categorySlug: string | nul
     throw new ValidationError({ images: ['Image size must be < 5MB'] });
   }
   const slug = categorySlug || 'uncategorized';
-  const ext = extname(image.filename) || '.jpg';
+  // Kengaytmani foydalanuvchi nomidan emas, kontent (magic bytes) bo'yicha aniqlaymiz —
+  // .html/.svg/.php orqali saqlangan XSS/RCE'ning oldini oladi.
+  const ext = resolveImageExtension(image.buffer);
   const safeName = `${randomUUID()}${ext}`;
   const relativePath = join('products', slug, 'images', safeName).replace(/\\/g, '/');
   const absolutePath = join(process.cwd(), env.MEDIA_ROOT, relativePath);

@@ -3,16 +3,28 @@ import { z } from 'zod';
 // Auth modul uchun zod validatsiya sxemalari.
 // Barcha kirish/chiqish snake_case konvensiyasida.
 
-// Parol kuchi tekshiruvi (kamida 8 belgi, harf + raqam).
+// Keng tarqalgan/zaif parollar (rad etiladi).
+const COMMON_PASSWORDS = new Set([
+  '12345678', '123456789', '1234567890', 'password', 'password1', 'qwerty123',
+  'parol123', 'admin123', '11111111', '00000000', 'iloveyou', 'welcome1',
+]);
+
+// Parol kuchi tekshiruvi (kamida 8 belgi, harf + raqam, keng tarqalmagan).
 function passwordIssues(password: string, ctx: z.RefinementCtx, path: (string | number)[] = []): void {
   if (password.length < 8) {
     ctx.addIssue({ code: 'custom', message: 'Parol kamida 8 ta belgidan iborat bo‘lishi kerak.', path });
+  }
+  if (password.length > 128) {
+    ctx.addIssue({ code: 'custom', message: 'Parol 128 ta belgidan oshmasligi kerak.', path });
   }
   if (!/[A-Za-z]/.test(password)) {
     ctx.addIssue({ code: 'custom', message: 'Parolda kamida bitta harf bo‘lishi kerak.', path });
   }
   if (!/\d/.test(password)) {
     ctx.addIssue({ code: 'custom', message: 'Parolda kamida bitta raqam bo‘lishi kerak.', path });
+  }
+  if (COMMON_PASSWORDS.has(password.toLowerCase())) {
+    ctx.addIssue({ code: 'custom', message: 'Bu parol juda oddiy. Boshqa, murakkabroq parol tanlang.', path });
   }
 }
 

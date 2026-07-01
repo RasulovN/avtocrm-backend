@@ -1,13 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { prisma } from '../../db/prisma.js';
 import { checkPassword, hashPassword } from '../../common/password.js';
-import { createTokens, accessFromRefresh } from '../../common/jwt.js';
+import { createTokens, accessFromRefresh, verifyAccess } from '../../common/jwt.js';
 import { setAuthCookies, clearAuthCookies } from '../../common/cookies.js';
+import { revokeToken } from '../../common/tokenBlacklist.js';
 import { recordAudit } from '../../common/audit.js';
 import { checkValidPhone } from '../../common/validators.js';
 import { getPageParams, paginate } from '../../common/pagination.js';
 import { getCompanyId } from '../../common/tenant.js';
-import { BadRequest, Unauthorized, ValidationError } from '../../common/errors.js';
+import { BadRequest, Forbidden, Unauthorized, ValidationError } from '../../common/errors.js';
+import { rateLimit } from '../../plugins/rateLimit.js';
 import { makeToken, checkToken, encodeUid, decodeUid } from '../../common/passwordReset.js';
 import { sendMail } from '../../common/email.js';
 import { env } from '../../config/env.js';
@@ -47,6 +49,43 @@ function clientMeta(req: FastifyRequest) {
   };
 }
 
+// So'rovdagi access token'ni (cookie yoki Bearer) qaytaradi.
+function extractToken(req: FastifyRequest): string | null {
+  const cookieToken = (req.cookies as Record<string, string | undefined>)?.access_token;
+  if (cookieToken) return cookieToken;
+  const header = req.headers.authorization;
+  if (header && header.startsWith('Bearer ')) return header.slice(7);
+  return null;
+}
+
+// Logout: joriy access token'ni bekor qiladi (blacklist).
+function revokeCurrentToken(req: FastifyRequest): void {
+  const token = extractToken(req);
+  if (!token) return;
+  try {
+    const payload = verifyAccess(token);
+    if (payload.jti && payload.exp) revokeToken(payload.jti, payload.exp);
+  } catch {
+    /* yaroqsiz token — e'tiborsiz */
+  }
+}
+
+// IDOR himoyasi: so'rov egasi maqsad foydalanuvchiga kira oladimi?
+// Ruxsat: super admin YOKI o'zi YOKI aynan bir kompaniya a'zosi.
+async function assertCanAccessUser(req: FastifyRequest, targetId: number): Promise<void> {
+  const me = req.authUser!;
+  if (me.isSuperuser) return;
+  if (me.id === targetId) return;
+  const target = await prisma.user.findUnique({
+    where: { id: targetId },
+    select: { companyId: true },
+  });
+  if (!target) throw new Forbidden();
+  if (!me.companyId || target.companyId !== me.companyId) {
+    throw new Forbidden({ detail: 'Bu foydalanuvchiga kirish huquqingiz yo\'q.' });
+  }
+}
+
 export async function usersRoutes(app: FastifyInstance) {
   // ===================== Profile =====================
   app.get('/profile/', { onRequest: app.authenticate }, async (req) => {
@@ -54,7 +93,7 @@ export async function usersRoutes(app: FastifyInstance) {
   });
 
   // ===================== Auth =====================
-  app.post('/login/', async (req, reply) => {
+  app.post('/login/', { onRequest: rateLimit({ name: 'users-login', max: 10, windowMs: 5 * 60_000 }) }, async (req, reply) => {
     const body = loginSchema.parse(req.body);
     checkValidPhone(body.phone_number);
 
@@ -102,6 +141,7 @@ export async function usersRoutes(app: FastifyInstance) {
   });
 
   app.post('/logout/', { onRequest: app.authenticate }, async (req, reply) => {
+    revokeCurrentToken(req);
     clearAuthCookies(reply);
     const meta = clientMeta(req);
     recordAudit({
@@ -157,7 +197,7 @@ export async function usersRoutes(app: FastifyInstance) {
     return reply.send({ success: true, status_code: 200, message: "Parolingiz muvofaqiyatli o'zgartirildi" });
   });
 
-  app.post('/auth/forgot-password/', async (req, reply) => {
+  app.post('/auth/forgot-password/', { onRequest: rateLimit({ name: 'users-forgot', max: 5, windowMs: 15 * 60_000 }) }, async (req, reply) => {
     const body = forgotPasswordSchema.parse(req.body);
     const user = await prisma.user.findFirst({ where: { email: body.email } });
     if (user) {
@@ -175,12 +215,13 @@ export async function usersRoutes(app: FastifyInstance) {
         req.log.error(err);
       }
     }
+    // Xavfsiz: email mavjudligini oshkor qilmaymiz (enumeration'ning oldini oladi).
     return reply.send({
-      detail: `If the email exists, a reset link has been sent.(${user?.email ?? ''})`,
+      detail: 'If the email exists, a reset link has been sent.',
     });
   });
 
-  app.post('/auth/reset-password/:uidb64/:token/', async (req, reply) => {
+  app.post('/auth/reset-password/:uidb64/:token/', { onRequest: rateLimit({ name: 'users-reset', max: 10, windowMs: 15 * 60_000 }) }, async (req, reply) => {
     const { uidb64, token } = req.params as { uidb64: string; token: string };
     const body = resetPasswordSchema.parse(req.body);
 
@@ -200,19 +241,22 @@ export async function usersRoutes(app: FastifyInstance) {
   });
 
   // ===================== Users CRUD =====================
-  // DRF: UsersListView permission AllowAny, pagination None
-  app.get('/', async () => {
+  // Barcha foydalanuvchilar ro'yxati — faqat super admin (avval AllowAny edi,
+  // bu barcha kompaniyalarning email/telefonlarini oshkor qilardi).
+  app.get('/', { onRequest: app.requireSuperuser }, async () => {
     return listUsers();
   });
 
   app.get('/:id/', { onRequest: app.authenticate }, async (req) => {
     const id = Number((req.params as { id: string }).id);
+    await assertCanAccessUser(req, id); // IDOR himoyasi
     const user = await getUser(id);
     return serializeUser(user);
   });
 
   app.put('/:id/', { onRequest: app.authenticate }, async (req) => {
     const id = Number((req.params as { id: string }).id);
+    await assertCanAccessUser(req, id); // IDOR himoyasi
     const body = userUpdateSchema.parse(req.body);
     if (body.phone_number) checkValidPhone(body.phone_number);
     const user = await updateUser(id, body);
@@ -221,12 +265,13 @@ export async function usersRoutes(app: FastifyInstance) {
 
   app.delete('/:id/', { onRequest: app.authenticate }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
+    await assertCanAccessUser(req, id); // IDOR himoyasi
     await deleteUser(id);
     return reply.status(204).send();
   });
 
-  // Seller create
-  app.post('/seller-create/', { onRequest: app.authenticate }, async (req, reply) => {
+  // Seller create — faqat super admin (servis ham tekshiradi).
+  app.post('/seller-create/', { onRequest: app.requireSuperuser }, async (req, reply) => {
     const body = sellerCreateSchema.parse(req.body);
     checkValidPhone(body.phone_number);
     const user = await createSellerWithStore({

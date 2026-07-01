@@ -26,9 +26,24 @@ export async function buildApp(): Promise<FastifyInstance> {
     trustProxy: true,
   });
 
+  // CORS xavfsizligi: PRODUCTION'da `*` (barcha origin) bilan `credentials:true`
+  // KOMBINATSIYASI xavfli (CSRF/cookie o'g'irlash), shuning uchun taqiqlanadi —
+  // aniq frontend domen(lar)ini berish shart.
+  // DEVELOPMENT'da qulaylik uchun so'rov origin'i aks ettiriladi va credentials
+  // yoqiladi (localhost:5173, LAN qurilmalari va h.k.).
+  const allowAllOrigins = env.CORS_ORIGIN === '*';
+  if (allowAllOrigins && !isDev) {
+    app.log.warn(
+      'CORS_ORIGIN="*" production uchun xavfli va credentials o\'chirildi. ' +
+        'Aniq frontend domen(lar)ini bering (masalan CORS_ORIGIN=https://zumex.uz).',
+    );
+  }
+  // Prod'da `*` bo'lsa credentials'ni o'chiramiz; dev'da yoki aniq domen berilganda yoqamiz.
+  const corsCredentials = !allowAllOrigins || isDev;
   await app.register(cors, {
-    origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(','),
-    credentials: true,
+    // `true` = so'rov origin'ini aks ettiradi (credentials bilan mos, `*` emas).
+    origin: allowAllOrigins ? true : env.CORS_ORIGIN.split(',').map((s) => s.trim()),
+    credentials: corsCredentials,
     // @fastify/cors default methods 'GET,HEAD,POST' — PUT/PATCH/DELETE'ni qo'shamiz
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
@@ -40,20 +55,27 @@ export async function buildApp(): Promise<FastifyInstance> {
     root: join(process.cwd(), env.MEDIA_ROOT),
     prefix: env.MEDIA_URL,
     decorateReply: false,
-  });
-
-  // Swagger / OpenAPI
-  await app.register(swagger, {
-    openapi: {
-      info: { title: 'Auto CRM API', description: 'Auto CRM project', version: '1.0.0' },
-      components: {
-        securitySchemes: {
-          bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
-        },
-      },
+    // Brauzer kontent-turini "sniffing" qilib bajarmasligi uchun (XSS himoyasi).
+    setHeaders: (res) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
     },
   });
-  await app.register(swaggerUi, { routePrefix: '/api/docs' });
+
+  // Swagger / OpenAPI — faqat development'da. Production'da barcha endpoint sxemasini
+  // oshkor qilmaslik uchun yopiq (recon yuzasini kamaytiradi).
+  if (isDev) {
+    await app.register(swagger, {
+      openapi: {
+        info: { title: 'Auto CRM API', description: 'Auto CRM project', version: '1.0.0' },
+        components: {
+          securitySchemes: {
+            bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+          },
+        },
+      },
+    });
+    await app.register(swaggerUi, { routePrefix: '/api/docs' });
+  }
 
   await app.register(errorHandler);
   await app.register(authPlugin);

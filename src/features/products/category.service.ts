@@ -1,10 +1,11 @@
 import type { Category, Prisma } from '@prisma/client';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, extname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import slugify from 'slugify';
 import { prisma } from '../../db/prisma.js';
 import { NotFound, ValidationError } from '../../common/errors.js';
+import { resolveImageExtension } from '../../common/uploads.js';
 import type { PageParams } from '../../common/pagination.js';
 import { pickLocalized, type Lang } from '../../common/i18n.js';
 import { env } from '../../config/env.js';
@@ -18,7 +19,8 @@ async function saveCategoryImage(image: UploadedImage, slug: string): Promise<st
   if (image.buffer.length > MAX_CATEGORY_IMAGE_SIZE) {
     throw new ValidationError({ image: ['Image size must be < 5MB'] });
   }
-  const ext = extname(image.filename) || '.jpg';
+  // Kengaytmani kontent (magic bytes) bo'yicha aniqlaymiz (saqlangan XSS'ga qarshi).
+  const ext = resolveImageExtension(image.buffer);
   const safeName = `${randomUUID()}${ext}`;
   const relativePath = join('categories', slug || 'uncategorized', safeName).replace(/\\/g, '/');
   const absolutePath = join(process.cwd(), env.MEDIA_ROOT, relativePath);

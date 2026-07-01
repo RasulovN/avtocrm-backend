@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteHandlerMethod } from 'fastify';
+import { timingSafeEqual } from 'node:crypto';
 import { env } from '../../config/env.js';
 import {
   PaymeError,
@@ -29,10 +30,19 @@ import {
   SubscribeError,
 } from './subscribe.service.js';
 import { serializeSubscription } from '../subscriptions/subscriptions.service.js';
+import { rateLimit } from '../../plugins/rateLimit.js';
 
 // ─────────────────────────────────────────────
 // Basic-auth tekshiruvi: Authorization: Basic base64("Paycom:" + PAYME_KEY)
 // ─────────────────────────────────────────────
+// Ikki maxfiy qatorni doimiy vaqtda solishtirish (timing attack'ga qarshi).
+function safeEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ba.length !== bb.length) return false;
+  return timingSafeEqual(ba, bb);
+}
+
 function isAuthorized(req: FastifyRequest): boolean {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Basic ')) return false;
@@ -47,22 +57,18 @@ function isAuthorized(req: FastifyRequest): boolean {
   const login = decoded.slice(0, sep);
   const password = decoded.slice(sep + 1);
   if (login !== 'Paycom') return false;
-  // Sandbox test_key, production esa key bilan imzolaydi. Nomuvofiq rejim/konfiguratsiya
-  // tufayli bloklanmaslik uchun sozlangan ISTALGAN kalitni qabul qilamiz (faol/prod/test).
-  const keys = [env.PAYME_ACTIVE_KEY, env.PAYME_KEY, env.PAYME_TEST_KEY].filter(Boolean);
-  const ok = keys.includes(password);
+  // FAQAT amaldagi rejimga mos kalit qabul qilinadi (PAYME_ACTIVE_KEY).
+  // Production'da sandbox test kalitini QABUL QILMAYMIZ — aks holda ma'lum test
+  // kalit bilan haqiqiy to'lovsiz obuna faollashtirish (firibgarlik) mumkin bo'lardi.
+  const expected = env.PAYME_ACTIVE_KEY;
+  if (!expected) {
+    req.log.error('Payme webhook: PAYME_ACTIVE_KEY sozlanmagan — barcha so\'rovlar rad etiladi.');
+    return false;
+  }
+  const ok = safeEqual(password, expected);
   if (!ok) {
-    // Diagnostika: maxfiy kalitni oshkor qilmasdan — uzunlik va oxirgi 3 belgi.
-    const tail = (s: string) => (s ? s.slice(-3) : '∅');
-    req.log.warn(
-      {
-        recvLen: password.length,
-        recvTail: tail(password),
-        keyTails: keys.map(tail),
-        testMode: env.PAYME_TEST_MODE,
-      },
-      'Payme webhook: kalit mos kelmadi (Authorization). .env dagi PAYME_TEST_KEY/PAYME_KEY ni tekshiring.',
-    );
+    // Maxfiy ma'lumotsiz diagnostika.
+    req.log.warn({ testMode: env.PAYME_TEST_MODE }, 'Payme webhook: Authorization kaliti mos kelmadi.');
   }
   return ok;
 }
@@ -239,9 +245,24 @@ export async function paymentsRoutes(app: FastifyInstance) {
   }));
 
   const guard = { onRequest: [app.requireCompany, app.requirePermission('company.subscription.manage')] };
+  // Karta/OTP endpointlari uchun qo'shimcha rate-limit (brute-force'ga qarshi).
+  const cardGuard = {
+    onRequest: [
+      rateLimit({ name: 'card-create', max: 15, windowMs: 15 * 60_000 }),
+      app.requireCompany,
+      app.requirePermission('company.subscription.manage'),
+    ],
+  };
+  const verifyGuard = {
+    onRequest: [
+      rateLimit({ name: 'card-verify', max: 10, windowMs: 15 * 60_000 }),
+      app.requireCompany,
+      app.requirePermission('company.subscription.manage'),
+    ],
+  };
 
   // 1) Karta tokenizatsiyasi + OTP yuborish.
-  app.post('/card/create', guard, async (req, reply) => {
+  app.post('/card/create', cardGuard, async (req, reply) => {
     const body = cardCreateSchema.parse(req.body);
     try {
       const created = await cardsCreate(body.number, body.expire, body.save ?? false);
@@ -265,7 +286,7 @@ export async function paymentsRoutes(app: FastifyInstance) {
   });
 
   // 2) OTP tasdiqlash -> tasdiqlangan token qaytadi.
-  app.post('/card/verify', guard, async (req, reply) => {
+  app.post('/card/verify', verifyGuard, async (req, reply) => {
     const body = cardVerifySchema.parse(req.body);
     try {
       const verified = await cardsVerify(body.token, body.code);

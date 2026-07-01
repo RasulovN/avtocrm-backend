@@ -3,6 +3,7 @@ import fp from 'fastify-plugin';
 import type { Company, Store, StoreUser, User } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
 import { verifyAccess } from '../common/jwt.js';
+import { isTokenRevoked } from '../common/tokenBlacklist.js';
 import { Forbidden, Unauthorized } from '../common/errors.js';
 import { PERMISSIONS, ALWAYS_AVAILABLE_CODES } from '../features/rbac/permissions.catalog.js';
 
@@ -64,7 +65,10 @@ async function resolveContext(req: FastifyRequest): Promise<void> {
 
   let userId: number;
   try {
-    userId = verifyAccess(token).user_id;
+    const payload = verifyAccess(token);
+    // Logout qilingan (bekor qilingan) token — kontekst tiklanmaydi.
+    if (isTokenRevoked(payload.jti)) return;
+    userId = payload.user_id;
   } catch {
     return;
   }

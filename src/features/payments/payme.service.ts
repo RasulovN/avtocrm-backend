@@ -176,7 +176,8 @@ export async function createTransaction(params: PaymeParams): Promise<PaymeRpcRe
 
   // Yangi tranzaksiya — qayta tekshiramiz (joriy id "band" hisobidan chiqariladi).
   const { subscription, expectedTiyin } = await assertCanPerform(params, paycomId);
-  const createTime = params.time ?? nowMs();
+  // Server vaqtini ishlatamiz — mijoz (params.time) beradigan qiymatga ishonmaymiz.
+  const createTime = nowMs();
 
   const created = await prisma.paymeTransaction.create({
     data: {
