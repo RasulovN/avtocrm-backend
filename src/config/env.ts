@@ -109,6 +109,12 @@ export const env = {
   // Payme account field nomi (checkout link uchun) — bizda subscription id
   PAYME_ACCOUNT_FIELD: process.env.PAYME_ACCOUNT_FIELD ?? 'subscription_id',
 
+  // ===== Fiskalizatsiya (soliq cheki) =====
+  // MXIK/ИКПУ — "dasturiy taʼminotdan foydalanish xizmatlari". QQS to'lamaymiz -> 0.
+  PAYME_FISCAL_MXIK: process.env.PAYME_FISCAL_MXIK ?? '10305008002000000',
+  PAYME_FISCAL_PACKAGE_CODE: process.env.PAYME_FISCAL_PACKAGE_CODE ?? '1514296',
+  PAYME_FISCAL_VAT_PERCENT: Number(process.env.PAYME_FISCAL_VAT_PERCENT ?? 0),
+
   // ===== Yandex Maps =====
   YANDEX_MAPS_API_KEY: process.env.YANDEX_MAPS_API_KEY ?? '',
 

@@ -8,6 +8,7 @@ import { env } from '../../config/env.js';
 import { BadRequest } from '../../common/errors.js';
 import { PaymeState } from './payme.types.js';
 import { computeActivationWindow } from '../subscriptions/subscription.window.js';
+import { buildFiscalDetail, type PaymeReceiptDetail } from './payme.fiscal.js';
 
 export class SubscribeError extends Error {
   code: number;
@@ -98,8 +99,17 @@ interface ReceiptObj {
   state: number;
   amount: number;
 }
-export const receiptsCreate = (amount: number, account: Record<string, unknown>) =>
-  rpc<{ receipt: ReceiptObj }>('receipts.create', { amount, account }, true);
+// `detail` — fiskalizatsiya (MXIK). Berilsa chek soliqqa fiskallashtiriladi.
+export const receiptsCreate = (
+  amount: number,
+  account: Record<string, unknown>,
+  detail?: PaymeReceiptDetail,
+) =>
+  rpc<{ receipt: ReceiptObj }>(
+    'receipts.create',
+    detail ? { amount, account, detail } : { amount, account },
+    true,
+  );
 export const receiptsPay = (id: string, token: string) =>
   rpc<{ receipt: ReceiptObj }>('receipts.pay', { id, token }, true);
 
@@ -120,9 +130,11 @@ export async function payForSubscription(companyId: number, subscriptionId: numb
   if (amountTiyin <= 0) throw new BadRequest({ detail: "Bepul tarif uchun karta to'lovi shart emas." });
 
   const account = { [env.PAYME_ACCOUNT_FIELD]: String(subscription.id) };
+  // Fiskalizatsiya (MXIK) — chek soliqqa fiskallashtiriladi.
+  const detail = buildFiscalDetail(subscription, amountTiyin);
 
-  // 1) Chek yaratish
-  const created = await receiptsCreate(amountTiyin, account);
+  // 1) Chek yaratish (fiskal `detail` bilan)
+  const created = await receiptsCreate(amountTiyin, account, detail);
   const receiptId = created?.receipt?._id;
   if (!receiptId) throw new SubscribeError(-1, 'Chek yaratilmadi');
 

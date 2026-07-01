@@ -10,6 +10,7 @@ import {
   type PaymeRpcResult,
 } from './payme.types.js';
 import { computeActivationWindow } from '../subscriptions/subscription.window.js';
+import { buildFiscalDetail } from './payme.fiscal.js';
 
 // ─────────────────────────────────────────────
 // Yordamchilar
@@ -148,10 +149,11 @@ async function assertCanPerform(params: PaymeParams, excludePaycomId?: string) {
 // JSON-RPC metodlari
 // ─────────────────────────────────────────────
 
-// CheckPerformTransaction
+// CheckPerformTransaction — ruxsat + fiskalizatsiya (`detail`).
+// Payme aynan shu javobdagi `detail` bo'yicha soliq chekini fiskallashtiradi.
 export async function checkPerformTransaction(params: PaymeParams): Promise<PaymeRpcResult> {
-  await assertCanPerform(params);
-  return { allow: true };
+  const { subscription, expectedTiyin } = await assertCanPerform(params);
+  return { allow: true, detail: buildFiscalDetail(subscription, expectedTiyin) };
 }
 
 // CreateTransaction (idempotent paycomId bo'yicha)
