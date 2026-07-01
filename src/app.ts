@@ -40,9 +40,23 @@ export async function buildApp(): Promise<FastifyInstance> {
   }
   // Prod'da `*` bo'lsa credentials'ni o'chiramiz; dev'da yoki aniq domen berilganda yoqamiz.
   const corsCredentials = !allowAllOrigins || isDev;
+
+  // Ruxsat etilgan origin'lar — bo'shliq va oxirgi `/` ga chidamli (mustahkam moslashuv).
+  const normalizeOrigin = (o: string): string => o.trim().replace(/\/+$/, '').toLowerCase();
+  const allowedOrigins = new Set(
+    env.CORS_ORIGIN.split(',').map(normalizeOrigin).filter(Boolean),
+  );
+
   await app.register(cors, {
-    // `true` = so'rov origin'ini aks ettiradi (credentials bilan mos, `*` emas).
-    origin: allowAllOrigins ? true : env.CORS_ORIGIN.split(',').map((s) => s.trim()),
+    // Origin funksiyasi: normalizatsiya qilib solishtiramiz — `https://zumex.uz/`
+    // (oxirida slash) yoki bo'shliqli konfiguratsiya ham to'g'ri ishlaydi.
+    origin: allowAllOrigins
+      ? true
+      : (origin, cb) => {
+          // Origin yo'q so'rovlar (server-to-server, curl, same-origin) — ruxsat.
+          if (!origin) return cb(null, true);
+          cb(null, allowedOrigins.has(normalizeOrigin(origin)));
+        },
     credentials: corsCredentials,
     // @fastify/cors default methods 'GET,HEAD,POST' — PUT/PATCH/DELETE'ni qo'shamiz
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
