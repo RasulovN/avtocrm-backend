@@ -5,7 +5,7 @@
  * va javobni console'ga chiqaradi. Serverda "so'rov ketyaptimi / JSON qaytyaptimi"
  * ni tez tekshirish uchun.
  *
- * Ishga tushirish:
+ * Ishga tushirish:   1
  *   Dev:   npm run payme:test
  *   Prod:  node dist/scripts/payme-test.js
  *   Argument bilan:
