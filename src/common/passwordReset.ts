@@ -26,13 +26,17 @@ export function makeToken(userId: number, passwordHash: string): string {
 }
 
 export function checkToken(userId: number, passwordHash: string, token: string): boolean {
-  const parts = token.split('-');
-  if (parts.length !== 2) return false;
-  const ts = Number(parts[0]);
+  // DIQQAT: imzo (hash) base64url — ichida `-` bo'lishi mumkin. Shuning uchun
+  // FAQAT birinchi `-` bo'yicha ajratamiz (split('-') bilan bo'lsa hash ichidagi
+  // `-` tufayli token noto'g'ri rad etilardi).
+  const idx = token.indexOf('-');
+  if (idx === -1) return false;
+  const ts = Number(token.slice(0, idx));
+  const sig = token.slice(idx + 1);
   if (!Number.isFinite(ts)) return false;
   if (Math.floor(Date.now() / 1000) - ts > TIMEOUT_SECONDS) return false;
   const expected = makeHash(userId, passwordHash, ts);
   const a = Buffer.from(expected);
-  const b = Buffer.from(parts[1]);
+  const b = Buffer.from(sig);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
