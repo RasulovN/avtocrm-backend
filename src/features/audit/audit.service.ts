@@ -18,6 +18,7 @@ export interface AuditFilters {
   companyId?: number; // faqat 'all' doirasida
   dateFrom?: string;
   dateTo?: string;
+  archived?: boolean; // faqat 'all' (super admin) doirasida: arxiv holatini filtrlash
 }
 
 export async function listAuditLogs(scope: AuditScope, filters: AuditFilters, page: PageParams) {
@@ -25,6 +26,15 @@ export async function listAuditLogs(scope: AuditScope, filters: AuditFilters, pa
 
   if (scope.type === 'company') where.companyId = scope.companyId;
   if (scope.type === 'user') where.userId = scope.userId;
+
+  // Arxivlangan loglar FAQAT super admin ('all') panelida ko'rinadi.
+  // Kompaniya va foydalanuvchi doirasida arxivlanganlar butunlay yashiriladi.
+  if (scope.type !== 'all') {
+    where.archivedAt = null;
+  } else if (filters.archived !== undefined) {
+    // Super admin xohlasa arxiv holati bo'yicha filtrlashi mumkin.
+    where.archivedAt = filters.archived ? { not: null } : null;
+  }
 
   if (filters.action) where.action = filters.action;
   if (filters.entity) where.entity = filters.entity;
@@ -66,6 +76,7 @@ export async function listAuditLogs(scope: AuditScope, filters: AuditFilters, pa
     ip_address: r.ipAddress,
     user_agent: r.userAgent,
     created_at: r.createdAt,
+    archived_at: r.archivedAt,
   }));
 
   return { results, count };

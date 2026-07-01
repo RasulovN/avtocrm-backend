@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { runNotificationLifecycle } from './notificationLifecycle.js';
+import { runAuditLogLifecycle } from './auditLogLifecycle.js';
 
 const TWELVE_HOURS = 12 * 60 * 60 * 1000;
 
@@ -19,6 +20,18 @@ async function tick(app: FastifyInstance): Promise<void> {
     }
   } catch (err) {
     app.log.error({ err }, 'Notification lifecycle job xatosi');
+  }
+
+  try {
+    const res = await runAuditLogLifecycle();
+    if (res.archived || res.deleted) {
+      app.log.info(
+        { auditLogLifecycle: res },
+        `Audit log lifecycle: arxivlandi=${res.archived}, o'chirildi=${res.deleted}`,
+      );
+    }
+  } catch (err) {
+    app.log.error({ err }, 'Audit log lifecycle job xatosi');
   } finally {
     running = false;
   }

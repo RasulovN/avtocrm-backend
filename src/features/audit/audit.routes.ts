@@ -30,6 +30,8 @@ export async function auditRoutes(app: FastifyInstance) {
         companyId: q.company_id ? Number(q.company_id) : undefined,
         dateFrom: q.date_from,
         dateTo: q.date_to,
+        // Arxiv filtri faqat super admin doirasida amal qiladi (listAuditLogs tekshiradi).
+        archived: q.archived === undefined ? undefined : q.archived === 'true',
       },
       page,
     );

@@ -1082,10 +1082,15 @@ model AuditLog {
   ipAddress String?  @map("ip_address") @db.VarChar(45)
   userAgent String?  @map("user_agent")
   createdAt DateTime @default(now()) @map("created_at")
+  // Arxivlangan vaqti. null = faol log (kompaniya/foydalanuvchi panelida ko'rinadi).
+  // To'ldirilgan = arxivda (faqat super admin panelida ko'rinadi). 2 oydan keyin
+  // avtomatik to'ldiriladi; arxivdan 3 oy o'tgach yozuv butunlay o'chiriladi.
+  archivedAt DateTime? @map("archived_at")
 
   @@index([companyId, createdAt])
   @@index([userId, createdAt])
   @@index([entity])
+  @@index([archivedAt])
   @@map("audit_log")
 }
 
