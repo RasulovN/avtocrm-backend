@@ -15,6 +15,7 @@
     "prisma:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
     "payme:test": "tsx src/scripts/payme-test.ts",
+    "payme:reset": "tsx src/scripts/payme-reset-order.ts",
     "typecheck": "tsc --noEmit"
   },
   "prisma": {
