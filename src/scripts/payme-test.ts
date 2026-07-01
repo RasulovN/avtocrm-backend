@@ -19,7 +19,21 @@
  *   PAYME_TEST_AMOUNT   — summa tiyin (default: 9900000)
  */
 
-import { env } from '../config/env.js';
+// MUHIM: bu skript `env.ts` ni import QILMAYDI — aks holda u production'da
+// SECRET_KEY validatsiyasini ishga tushiradi (test uchun keraksiz). Faqat .env
+// yuklab, kerakli qiymatlarni to'g'ridan-to'g'ri process.env'dan olamiz.
+import 'dotenv/config';
+
+// Faol Payme kaliti (webhook Basic-auth uchun). Rejimga qarab test/prod kaliti.
+// Webhook barcha sozlangan kalitlarni qabul qiladi, shuning uchun mavjudini tanlaymiz.
+const TEST_MODE = (process.env.PAYME_TEST_MODE ?? '1') === '1';
+const ACTIVE_KEY =
+  (TEST_MODE ? process.env.PAYME_TEST_KEY : process.env.PAYME_KEY) ||
+  process.env.PAYME_KEY ||
+  process.env.PAYME_TEST_KEY ||
+  '';
+const ACCOUNT_FIELD = process.env.PAYME_ACCOUNT_FIELD ?? 'subscription_id';
+const PORT = process.env.PORT ?? '8000';
 
 // ── Konfiguratsiya (argv > .env > default) ─────────────────────────
 const [, , argMethod, argSubId, argAmount] = process.argv;
@@ -29,15 +43,15 @@ const SUB_ID = argSubId ?? process.env.PAYME_TEST_SUB_ID ?? '43';
 const AMOUNT = Number(argAmount ?? process.env.PAYME_TEST_AMOUNT ?? 9_900_000);
 
 const WEBHOOK_URL =
-  process.env.PAYME_WEBHOOK_URL ?? `http://127.0.0.1:${env.PORT}/payme/webhook`;
+  process.env.PAYME_WEBHOOK_URL ?? `http://127.0.0.1:${PORT}/payme/webhook`;
 
 // Basic-auth: base64("Paycom:" + faol kalit) — Payme aynan shunday imzolaydi.
 const authHeader =
-  'Basic ' + Buffer.from(`Paycom:${env.PAYME_ACTIVE_KEY}`, 'utf8').toString('base64');
+  'Basic ' + Buffer.from(`Paycom:${ACTIVE_KEY}`, 'utf8').toString('base64');
 
 // ── Metodga qarab params yasaymiz ──────────────────────────────────
 function buildParams(): Record<string, unknown> {
-  const account = { [env.PAYME_ACCOUNT_FIELD]: SUB_ID };
+  const account = { [ACCOUNT_FIELD]: SUB_ID };
   // Tranzaksiyaga tegishli metodlar uchun soxta paycom id (test uchun barqaror).
   const fakeId = `test_${SUB_ID}_${AMOUNT}`;
   switch (METHOD) {
