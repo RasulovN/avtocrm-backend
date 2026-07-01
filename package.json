@@ -14,6 +14,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
+    "payme:test": "tsx src/scripts/payme-test.ts",
     "typecheck": "tsc --noEmit"
   },
   "prisma": {

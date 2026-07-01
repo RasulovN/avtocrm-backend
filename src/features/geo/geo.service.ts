@@ -9,6 +9,8 @@ import type {
   RegionCreateInput,
   RegionUpdateInput,
 } from './geo.schemas.js';
+import { DEFAULT_GEO, type SeedCountry, type SeedRegion } from './geo.seed.data.js';
+import { resolveNames } from './geo.translit.js';
 
 // ── Serializatsiya (response snake_case) ─────────────────────
 
@@ -261,4 +263,228 @@ export async function deleteDistrict(id: number) {
   }
 
   await prisma.district.delete({ where: { id } });
+}
+
+// ============================================================
+//  STANDART GEO SEED (davlat -> viloyat -> tuman) — IDEMPOTENT
+// ============================================================
+// "Standart davlatlarni qo'shish": DEFAULT_GEO ma'lumotini bazaga singdiradi.
+//   - Yo'q bo'lsa yaratadi.
+//   - Bor bo'lsa (ism/kod bo'yicha topiladi) — yetishmayotgan tarjima (i18n)
+//     maydonlarini to'ldiradi, dublikat yaratmaydi.
+// Qayta ishga tushirilsa faqat kamchiliklar to'ldiriladi (xavfsiz).
+
+export interface GeoSeedResult {
+  countriesCreated: number;
+  countriesUpdated: number;
+  regionsCreated: number;
+  regionsUpdated: number;
+  districtsCreated: number;
+  districtsUpdated: number;
+}
+
+// Nomlarni solishtirish uchun normalizatsiya (bo'sh joy + registrga befarq).
+const norm = (s: string): string => s.trim().toLowerCase();
+
+// Viloyat nomini solishtirish uchun: " viloyati"/" respublikasi"/" region"/" oblast"
+// qo'shimchalarini olib tashlaymiz — shunda "Andijon viloyati" ↔ "Andijon" mos keladi.
+// DIQQAT: " shahri"/" city" OLINMAYDI — "Toshkent viloyati" va "Toshkent shahri"
+// alohida bo'lib qolishi kerak.
+const normRegion = (s: string): string =>
+  norm(s).replace(/\s+(viloyati|respublikasi|region|oblast|province)$/u, '').trim();
+
+// Tuman nomini solishtirish uchun. " tumani"/" tuman"/" rayoni" -> tuman (bazaviy nom).
+// " shahri"/" shahar"/" city" -> shahar (alohida marker bilan) — chunki "Qarshi tumani"
+// (tuman) va "Qarshi shahri" (shahar) turli ma'muriy birliklar, aralashmasligi kerak.
+const normDistrict = (s: string): string => {
+  const lower = norm(s);
+  const isCity = /\s+(shahri|shahar|city)$/u.test(lower);
+  const base = lower.replace(/\s+(tumani|tuman|rayoni|shahri|shahar|city|district)$/u, '').trim();
+  return isCity ? `${base} city` : base;
+};
+
+// Mavjud yozuvda null bo'lgan i18n maydonlarini seed qiymatlari bilan to'ldiradi.
+// O'zgartirish bo'lsa `true` qaytaradi (updated hisoblash uchun).
+function fillI18n(
+  existing: { nameUzCyrl: string | null; nameRu: string | null; nameEn: string | null },
+  seed: { nameUzCyrl?: string; nameRu?: string; nameEn?: string },
+  patch: { nameUzCyrl?: string; nameRu?: string; nameEn?: string },
+): boolean {
+  let changed = false;
+  if (!existing.nameUzCyrl && seed.nameUzCyrl) { patch.nameUzCyrl = seed.nameUzCyrl; changed = true; }
+  if (!existing.nameRu && seed.nameRu) { patch.nameRu = seed.nameRu; changed = true; }
+  if (!existing.nameEn && seed.nameEn) { patch.nameEn = seed.nameEn; changed = true; }
+  return changed;
+}
+
+async function seedCountryRow(seed: SeedCountry, result: GeoSeedResult): Promise<Country> {
+  const orConds: Prisma.CountryWhereInput[] = [
+    { name: { equals: seed.name, mode: 'insensitive' } },
+  ];
+  if (seed.code) orConds.push({ code: seed.code });
+  if (seed.nameEn) orConds.push({ nameEn: { equals: seed.nameEn, mode: 'insensitive' } });
+
+  // Yetishmayotgan tillarni lotin nomdan avtomatik to'ldiramiz (4 til).
+  const names = resolveNames(seed.name, seed);
+
+  const existing = await prisma.country.findFirst({ where: { OR: orConds } });
+  if (!existing) {
+    result.countriesCreated += 1;
+    return prisma.country.create({
+      data: {
+        name: seed.name,
+        code: seed.code ?? null,
+        nameUzCyrl: names.nameUzCyrl,
+        nameRu: names.nameRu,
+        nameEn: names.nameEn,
+      },
+    });
+  }
+
+  const patch: Prisma.CountryUpdateInput = {};
+  const changed = fillI18n(existing, names, patch as Record<string, string>);
+  if (!existing.code && seed.code) { patch.code = seed.code; }
+  if (changed || (patch.code !== undefined)) {
+    result.countriesUpdated += 1;
+    return prisma.country.update({ where: { id: existing.id }, data: patch });
+  }
+  return existing;
+}
+
+async function seedRegionRow(
+  seed: SeedRegion,
+  countryId: number,
+  existingByName: Map<string, Region>,
+  result: GeoSeedResult,
+): Promise<Region> {
+  // Yetishmayotgan tillarni lotin nomdan avtomatik to'ldiramiz (4 til).
+  const names = resolveNames(seed.name, seed);
+
+  const existing = existingByName.get(normRegion(seed.name));
+  if (!existing) {
+    result.regionsCreated += 1;
+    return prisma.region.create({
+      data: {
+        name: seed.name,
+        nameUzCyrl: names.nameUzCyrl,
+        nameRu: names.nameRu,
+        nameEn: names.nameEn,
+        countryId,
+      },
+    });
+  }
+
+  const patch: Prisma.RegionUpdateInput = {};
+  if (fillI18n(existing, names, patch as Record<string, string>)) {
+    result.regionsUpdated += 1;
+    return prisma.region.update({ where: { id: existing.id }, data: patch });
+  }
+  return existing;
+}
+
+// Mavjud yozuvlarda (davlat/viloyat/tuman) null bo'lgan til maydonlarini
+// o'zining lotin `name`idan transliteratsiya qilib to'ldiradi. Bu avval faqat
+// o'zbekcha qo'shilgan yozuvlarni ham 4 tilga keltiradi.
+async function backfillTranslations(result: GeoSeedResult): Promise<void> {
+  const nullCond = {
+    OR: [{ nameUzCyrl: null }, { nameRu: null }, { nameEn: null }],
+  };
+
+  // Countries
+  const countries = await prisma.country.findMany({
+    where: nullCond,
+    select: { id: true, name: true, nameUzCyrl: true, nameRu: true, nameEn: true },
+  });
+  for (const c of countries) {
+    const names = resolveNames(c.name, c);
+    const patch: Prisma.CountryUpdateInput = {};
+    if (fillI18n(c, names, patch as Record<string, string>)) {
+      await prisma.country.update({ where: { id: c.id }, data: patch });
+      result.countriesUpdated += 1;
+    }
+  }
+
+  // Regions
+  const regions = await prisma.region.findMany({
+    where: nullCond,
+    select: { id: true, name: true, nameUzCyrl: true, nameRu: true, nameEn: true },
+  });
+  for (const rg of regions) {
+    const names = resolveNames(rg.name, rg);
+    const patch: Prisma.RegionUpdateInput = {};
+    if (fillI18n(rg, names, patch as Record<string, string>)) {
+      await prisma.region.update({ where: { id: rg.id }, data: patch });
+      result.regionsUpdated += 1;
+    }
+  }
+
+  // Districts
+  const districts = await prisma.district.findMany({
+    where: nullCond,
+    select: { id: true, name: true, nameUzCyrl: true, nameRu: true, nameEn: true },
+  });
+  for (const ds of districts) {
+    const names = resolveNames(ds.name, ds);
+    const patch: Prisma.DistrictUpdateInput = {};
+    if (fillI18n(ds, names, patch as Record<string, string>)) {
+      await prisma.district.update({ where: { id: ds.id }, data: patch });
+      result.districtsUpdated += 1;
+    }
+  }
+}
+
+export async function seedDefaultGeo(): Promise<GeoSeedResult> {
+  const result: GeoSeedResult = {
+    countriesCreated: 0,
+    countriesUpdated: 0,
+    regionsCreated: 0,
+    regionsUpdated: 0,
+    districtsCreated: 0,
+    districtsUpdated: 0,
+  };
+
+  for (const seedCountry of DEFAULT_GEO) {
+    const country = await seedCountryRow(seedCountry, result);
+
+    // Shu davlatning mavjud viloyatlari (bir marta olib, xaritaga solamiz).
+    const existingRegions = await prisma.region.findMany({ where: { countryId: country.id } });
+    const regionByName = new Map(existingRegions.map((r) => [normRegion(r.name), r]));
+
+    for (const seedRegion of seedCountry.regions) {
+      const region = await seedRegionRow(seedRegion, country.id, regionByName, result);
+
+      if (!seedRegion.districts?.length) continue;
+
+      // Mavjud tuman nomlari to'plami — faqat yo'qlarini qo'shamiz (createMany).
+      const existingDistricts = await prisma.district.findMany({
+        where: { regionId: region.id },
+        select: { name: true },
+      });
+      const districtSet = new Set(existingDistricts.map((d) => normDistrict(d.name)));
+
+      const toCreate = seedRegion.districts
+        .filter((d) => !districtSet.has(normDistrict(d.name)))
+        .map((d) => {
+          // Yetishmayotgan tillarni lotin nomdan avtomatik to'ldiramiz (4 til).
+          const names = resolveNames(d.name, d);
+          return {
+            name: d.name,
+            nameUzCyrl: names.nameUzCyrl,
+            nameRu: names.nameRu,
+            nameEn: names.nameEn,
+            regionId: region.id,
+          };
+        });
+
+      if (toCreate.length) {
+        await prisma.district.createMany({ data: toCreate });
+        result.districtsCreated += toCreate.length;
+      }
+    }
+  }
+
+  // Mavjud (avvaldan bor) yozuvlardagi yetishmayotgan tillarni ham to'ldiramiz.
+  await backfillTranslations(result);
+
+  return result;
 }

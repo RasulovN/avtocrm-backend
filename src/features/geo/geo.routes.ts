@@ -23,6 +23,7 @@ import {
   createDistrict,
   updateDistrict,
   deleteDistrict,
+  seedDefaultGeo,
 } from './geo.service.js';
 
 function idParam(req: FastifyRequest): number {
@@ -73,6 +74,12 @@ export async function geoRoutes(app: FastifyInstance) {
   //  SUPER ADMIN CRUD — Country (requirePermission('platform.geo.manage'))
   // ============================================================
   const geoManage = { onRequest: [app.authenticate, app.requirePermission('platform.geo.manage')] };
+
+  // Standart davlatlar (O'zbekiston + qo'shni davlatlar + Rossiya) ni viloyat/tuman
+  // bilan bazaga singdirish. Idempotent: bor bo'lsa kamchiliklarni to'ldiradi.
+  app.post('/seed-defaults/', geoManage, async () => {
+    return seedDefaultGeo();
+  });
 
   app.post('/countries/', geoManage, async (req, reply) => {
     const body = countryCreateSchema.parse(req.body);
