@@ -91,11 +91,42 @@ function decimalToString(value: Prisma.Decimal): string {
   return value.toString();
 }
 
+// Payme tranzaksiyasining yengil shakli (chek/to'lov tafsiloti uchun).
+type TxLite = {
+  paycomId: string;
+  state: number;
+  amount: Prisma.Decimal;
+  createTime: bigint | null;
+  performTime: bigint | null;
+  cancelTime: bigint | null;
+};
+
 // Obuna uchun plan ma'lumotini ham qaytaramiz.
 type SubscriptionWithRelations = Subscription & {
   plan: { id: number; name: string; durationDays: number; price: Prisma.Decimal } | null;
   company?: { id: number; name: string } | null;
+  transactions?: TxLite[];
 };
+
+// Obunaga tegishli "asosiy" tranzaksiya (chek uchun): bajarilgani, aks holda oxirgisi.
+function pickPrimaryTx(txs?: TxLite[]): TxLite | null {
+  if (!txs || txs.length === 0) return null;
+  return txs.find((t) => t.state === 2) ?? txs[0];
+}
+
+// To'lov cheki tafsiloti (frontend `payment` sifatida o'qiydi).
+function serializePayment(txs?: TxLite[]) {
+  const tx = pickPrimaryTx(txs);
+  if (!tx) return null;
+  return {
+    payme_id: tx.paycomId, // Payme "To'lov ID"
+    state: tx.state, // 1=yaratilgan, 2=to'langan, -1/-2=bekor
+    amount_tiyin: tx.amount.toString(),
+    create_time: tx.createTime != null ? Number(tx.createTime) : null,
+    perform_time: tx.performTime != null ? Number(tx.performTime) : null,
+    cancel_time: tx.cancelTime != null ? Number(tx.cancelTime) : null,
+  };
+}
 
 // Subscription -> snake_case javob.
 // Eslatma: tekis maydonlar (company_name, plan_name, ...) eski klientlar uchun
@@ -120,6 +151,8 @@ export function serializeSubscription(s: SubscriptionWithRelations) {
     plan: s.plan
       ? { id: s.plan.id, name: s.plan.name, duration_days: s.plan.durationDays }
       : null,
+    // To'lov cheki tafsiloti (Payme tranzaksiyasi). Yuklangan bo'lsa qaytariladi.
+    payment: serializePayment(s.transactions),
   };
 }
 
@@ -280,7 +313,13 @@ export async function listMyPaymentHistory(companyId: number, page: PageParams) 
   const [rows, count] = await Promise.all([
     prisma.subscription.findMany({
       where,
-      include: { plan: true },
+      include: {
+        plan: true,
+        transactions: {
+          select: { paycomId: true, state: true, amount: true, createTime: true, performTime: true, cancelTime: true },
+          orderBy: { createTime: 'desc' },
+        },
+      },
       orderBy: { createdAt: 'desc' },
       skip: page.skip,
       take: page.take,
@@ -341,7 +380,14 @@ export async function listAllSubscriptions(
   const [rows, count] = await Promise.all([
     prisma.subscription.findMany({
       where,
-      include: { plan: true, company: { select: { id: true, name: true } } },
+      include: {
+        plan: true,
+        company: { select: { id: true, name: true } },
+        transactions: {
+          select: { paycomId: true, state: true, amount: true, createTime: true, performTime: true, cancelTime: true },
+          orderBy: { createTime: 'desc' },
+        },
+      },
       orderBy: { createdAt: 'desc' },
       skip: page.skip,
       take: page.take,
