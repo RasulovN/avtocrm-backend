@@ -233,9 +233,10 @@ export async function usersRoutes(app: FastifyInstance) {
     if (!checkToken(user.id, user.password, token)) {
       throw new BadRequest({ detail: 'Token is invalid or expired.' });
     }
+    const newPassword = body.new_password ?? body.password!;
     await prisma.user.update({
       where: { id: user.id },
-      data: { password: await hashPassword(body.password) },
+      data: { password: await hashPassword(newPassword) },
     });
     return reply.send({ detail: 'Password successfully reset.' });
   });

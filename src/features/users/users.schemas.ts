@@ -53,14 +53,27 @@ export const changePasswordSchema = z
 
 export const forgotPasswordSchema = z.object({ email: z.string().email() });
 
+// Frontend `new_password` yuboradi; orqaga moslik uchun `password` ham qabul qilinadi.
 export const resetPasswordSchema = z
   .object({
-    password: z.string().min(8),
+    new_password: z.string().optional(),
+    password: z.string().optional(),
     confirm_password: z.string(),
   })
-  .refine((d) => d.password === d.confirm_password, {
-    message: 'Passwords do not match.',
-    path: [],
+  .superRefine((d, ctx) => {
+    const pw = d.new_password ?? d.password ?? '';
+    if (pw.length < 8) {
+      ctx.addIssue({ code: 'custom', message: 'Parol kamida 8 ta belgidan iborat bo‘lishi kerak.', path: ['new_password'] });
+    }
+    if (!/[A-Za-z]/.test(pw)) {
+      ctx.addIssue({ code: 'custom', message: 'Parolda kamida bitta harf bo‘lishi kerak.', path: ['new_password'] });
+    }
+    if (!/\d/.test(pw)) {
+      ctx.addIssue({ code: 'custom', message: 'Parolda kamida bitta raqam bo‘lishi kerak.', path: ['new_password'] });
+    }
+    if (pw !== d.confirm_password) {
+      ctx.addIssue({ code: 'custom', message: 'Parollar mos kelmadi.', path: ['confirm_password'] });
+    }
   });
 
 export const customerWriteSchema = z.object({
