@@ -12,6 +12,7 @@ import {
   cancelMyPendingSubscription,
   listAllSubscriptions,
   patchSubscription,
+  setSubscriptionFiscal,
 } from './subscriptions.service.js';
 
 export async function subscriptionsRoutes(app: FastifyInstance) {
@@ -75,6 +76,23 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
     },
   );
 
+  // GET /payments/ — super admin: faqat TO'LOV qilingan obunalar (chek bilan).
+  // "Obuna & to'lovlar > To'lovlar" menyusi shu endpointdan foydalanadi.
+  app.get(
+    '/payments/',
+    { onRequest: app.requirePermission('platform.payments.view') },
+    async (req) => {
+      const q = req.query as Record<string, string | undefined>;
+      const page = getPageParams(req);
+      const companyId = q.company_id ? Number(q.company_id) : undefined;
+      const { results, count } = await listAllSubscriptions(
+        { status: q.status, company_id: companyId, paid: true },
+        page,
+      );
+      return paginate(req, results, count, page);
+    },
+  );
+
   // PATCH /:id/ — qo'lda status o'zgartirish (activate / cancel).
   app.patch(
     '/:id/',
@@ -83,6 +101,17 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       const id = Number((req.params as { id: string }).id);
       const body = subscriptionPatchSchema.parse(req.body);
       return patchSubscription(id, body.action, body.days);
+    },
+  );
+
+  // PUT /:id/fiscal/ — soliq (OFD) fiskal chek havolasini biriktirish/tozalash.
+  app.put(
+    '/:id/fiscal/',
+    { onRequest: app.requirePermission('platform.subscriptions.manage') },
+    async (req) => {
+      const id = Number((req.params as { id: string }).id);
+      const body = (req.body ?? {}) as { fiscal_url?: string | null };
+      return setSubscriptionFiscal(id, body.fiscal_url ?? null);
     },
   );
 }

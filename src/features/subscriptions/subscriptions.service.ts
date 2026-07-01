@@ -99,6 +99,7 @@ type TxLite = {
   createTime: bigint | null;
   performTime: bigint | null;
   cancelTime: bigint | null;
+  fiscalUrl: string | null;
 };
 
 // Obuna uchun plan ma'lumotini ham qaytaramiz.
@@ -125,6 +126,7 @@ function serializePayment(txs?: TxLite[]) {
     create_time: tx.createTime != null ? Number(tx.createTime) : null,
     perform_time: tx.performTime != null ? Number(tx.performTime) : null,
     cancel_time: tx.cancelTime != null ? Number(tx.cancelTime) : null,
+    fiscal_url: tx.fiscalUrl, // Soliq (OFD) fiskal chek havolasi (bo'lsa)
   };
 }
 
@@ -316,7 +318,7 @@ export async function listMyPaymentHistory(companyId: number, page: PageParams) 
       include: {
         plan: true,
         transactions: {
-          select: { paycomId: true, state: true, amount: true, createTime: true, performTime: true, cancelTime: true },
+          select: { paycomId: true, state: true, amount: true, createTime: true, performTime: true, cancelTime: true, fiscalUrl: true },
           orderBy: { createTime: 'desc' },
         },
       },
@@ -370,12 +372,14 @@ export async function cancelMyPendingSubscription(companyId: number, id: number)
 // GET / — super admin: barcha obunalar (filter + pagination).
 // ─────────────────────────────────────────────
 export async function listAllSubscriptions(
-  filters: { status?: string; company_id?: number },
+  filters: { status?: string; company_id?: number; paid?: boolean },
   page: PageParams,
 ) {
   const where: Prisma.SubscriptionWhereInput = {};
   if (filters.status) where.status = filters.status;
   if (filters.company_id) where.companyId = filters.company_id;
+  // To'lovlar sahifasi: faqat haqiqiy Payme to'lovi (state=2) bo'lgan obunalar.
+  if (filters.paid) where.transactions = { some: { state: 2 } };
 
   const [rows, count] = await Promise.all([
     prisma.subscription.findMany({
@@ -384,7 +388,7 @@ export async function listAllSubscriptions(
         plan: true,
         company: { select: { id: true, name: true } },
         transactions: {
-          select: { paycomId: true, state: true, amount: true, createTime: true, performTime: true, cancelTime: true },
+          select: { paycomId: true, state: true, amount: true, createTime: true, performTime: true, cancelTime: true, fiscalUrl: true },
           orderBy: { createTime: 'desc' },
         },
       },
@@ -464,4 +468,43 @@ export async function patchSubscription(
   });
   await notifySubscriptionEvent(id, false);
   return serializeSubscription(updated);
+}
+
+// ─────────────────────────────────────────────
+// PUT /:id/fiscal — super admin obunaga soliq (OFD) fiskal chek havolasini biriktiradi.
+// Payme kabinetidagi to'lov cheki havolasini (https://ofd.soliq.uz/epi?...) qo'yadi.
+// Mijoz keyin uni QR + havola sifatida ko'radi (qonuniy talab).
+// ─────────────────────────────────────────────
+const TX_SELECT = {
+  paycomId: true, state: true, amount: true,
+  createTime: true, performTime: true, cancelTime: true, fiscalUrl: true,
+} as const;
+
+export async function setSubscriptionFiscal(subscriptionId: number, fiscalUrl: string | null) {
+  const sub = await prisma.subscription.findUnique({ where: { id: subscriptionId } });
+  if (!sub) throw new NotFound({ detail: 'Obuna topilmadi.' });
+
+  // Asosiy tranzaksiya: bajarilgani (state=2), aks holda oxirgisi.
+  const tx = await prisma.paymeTransaction.findFirst({
+    where: { subscriptionId },
+    orderBy: [{ state: 'desc' }, { createTime: 'desc' }],
+  });
+  if (!tx) throw new BadRequest({ detail: "Bu obuna uchun Payme tranzaksiyasi topilmadi." });
+
+  const url = fiscalUrl?.trim() || null;
+  if (url && !/^https?:\/\//i.test(url)) {
+    throw new BadRequest({ detail: "Fiskal havola http(s):// bilan boshlanishi kerak." });
+  }
+
+  await prisma.paymeTransaction.update({ where: { id: tx.id }, data: { fiscalUrl: url } });
+
+  const updated = await prisma.subscription.findUnique({
+    where: { id: subscriptionId },
+    include: {
+      plan: true,
+      company: { select: { id: true, name: true } },
+      transactions: { select: TX_SELECT, orderBy: { createTime: 'desc' } },
+    },
+  });
+  return serializeSubscription(updated!);
 }
