@@ -21,6 +21,33 @@ export const paymeRpcRequestSchema = z.object({
 
 export type PaymeRpcRequestInput = z.infer<typeof paymeRpcRequestSchema>;
 
+// ─────────── SetFiscalData (Merchant API) — fiskal chek DTO ───────────
+// Payme fiskallashtirishdan so'ng webhookga yuboradi. Rasmiy maydonlar:
+//   params.id (String), params.type (PERFORM|CANCEL),
+//   params.fiscal_data { receipt_id, status_code, message, terminal_id,
+//                        fiscal_sign, qr_code_url, date }
+// receipt_id turi hujjatda Merchant'da String, Subscribe'da Number — union.
+const strOrNum = z.union([z.string(), z.number()]).transform((v) => String(v));
+
+export const fiscalDataSchema = z.object({
+  receipt_id: strOrNum.optional(),
+  status_code: z.number().optional(),
+  message: z.string().optional(),
+  terminal_id: strOrNum.optional(),
+  fiscal_sign: strOrNum.optional(),
+  qr_code_url: z.string().optional(),
+  date: strOrNum.optional(),
+}).passthrough();
+
+export const setFiscalDataSchema = z.object({
+  id: strOrNum,
+  type: z.enum(['PERFORM', 'CANCEL']),
+  fiscal_data: fiscalDataSchema,
+});
+
+export type FiscalDataInput = z.infer<typeof fiscalDataSchema>;
+export type SetFiscalDataInput = z.infer<typeof setFiscalDataSchema>;
+
 // ─────────── Subscribe API (karta orqali to'lov) input sxemalari ───────────
 export const cardCreateSchema = z.object({
   // Karta raqami (16 raqam; probel/chiziqlar olib tashlanadi)

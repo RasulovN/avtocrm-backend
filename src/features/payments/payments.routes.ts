@@ -10,6 +10,7 @@ import {
 } from './payme.types.js';
 import {
   paymeRpcRequestSchema,
+  setFiscalDataSchema,
   cardCreateSchema,
   cardVerifySchema,
   subscribePaySchema,
@@ -22,6 +23,7 @@ import {
   checkTransaction,
   getStatement,
 } from './payme.service.js';
+import { handleSetFiscalData } from './payme.fiscal.service.js';
 import {
   cardsCreate,
   cardsGetVerifyCode,
@@ -207,6 +209,22 @@ const paymeWebhookHandler: RouteHandlerMethod = async (req, reply) => {
       case 'GetStatement':
         result = await getStatement(p);
         break;
+      case 'SetFiscalData': {
+        // Fiskal (Soliq/OFD) chek — params `fiscal_data` bilan keladi, shuning uchun
+        // umumiy sxema emas, maxsus DTO bilan parse qilamiz.
+        const rawParams = (req.body as { params?: unknown }).params;
+        const fiscalParsed = setFiscalDataSchema.safeParse(rawParams);
+        if (!fiscalParsed.success) {
+          return rpcError(reply, reqId, PaymeError.InvalidRequest, INVALID_REQUEST_MSG);
+        }
+        const res = await handleSetFiscalData(fiscalParsed.data);
+        req.log.info(
+          { setFiscalData: { type: res.type, subscriptionId: res.subscriptionId, matched: res.matchedTransaction } },
+          'Payme SetFiscalData: fiskal chek saqlandi',
+        );
+        result = { success: true };
+        break;
+      }
       default:
         return rpcError(reply, reqId, PaymeError.MethodNotFound, METHOD_NOT_FOUND_MSG);
     }

@@ -284,13 +284,47 @@ model PaymeTransaction {
   cancelTime     BigInt        @default(0) @map("cancel_time")
   account        Json?
   // Soliq (OFD) fiskal chek havolasi — https://ofd.soliq.uz/epi?t=..&r=..&c=..&s=..
-  // Payme webhookka fiskal ma'lumot yubormaydi; super admin Payme kabinetidan olib
-  // biriktiradi (yoki Subscribe API'dan). Mijoz QR + havola ko'radi (qonuniy talab).
+  // Payme `SetFiscalData` metodi orqali AVTOMATIK yuboradi (qr_code_url shu yerga
+  // ko'chiriladi). Super admin qo'lda ham biriktirishi mumkin (zaxira).
   fiscalUrl      String?       @map("fiscal_url")
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
+  fiscalReceipts PaymeFiscalReceipt[]
+
   @@map("payme_transaction")
+}
+
+// Payme `SetFiscalData` (Merchant API) orqali kelgan fiskal (Soliq/OFD) chek.
+// Payme fiskallashtirish tugagach webhookka chaqiradi va fiscal_data'ni yuboradi.
+// Har bir tranzaksiya uchun 2 tur bo'lishi mumkin: PERFORM (to'lov) va CANCEL (bekor).
+model PaymeFiscalReceipt {
+  id             Int      @id @default(autoincrement())
+  // params.id — Payme bazasidagi chek id (Merchant API'da tranzaksiya paycomId'si).
+  paymeReceiptId String   @map("payme_receipt_id") @db.VarChar(50)
+  type           String   @db.VarChar(10) // PERFORM | CANCEL
+
+  transactionId  Int?              @map("transaction_id")
+  transaction    PaymeTransaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  subscriptionId Int?              @map("subscription_id")
+
+  // fiscal_data (rasmiy maydonlar)
+  receiptId  String? @map("receipt_id") @db.VarChar(50) // Virtual Fiskal Modul tartib raqami
+  terminalId String? @map("terminal_id") @db.VarChar(50) // VFM raqami
+  fiscalSign String? @map("fiscal_sign") @db.VarChar(60) // fiskal belgi
+  qrCodeUrl  String? @map("qr_code_url") // fiskal chek URL (QR ichidagi manzil)
+  statusCode Int?    @map("status_code")
+  message    String?
+  fiscalDate String? @map("fiscal_date") @db.VarChar(50) // OFD ro'yxatga olingan sana
+  raw        Json? // to'liq fiscal_data (audit uchun)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([paymeReceiptId, type])
+  @@index([subscriptionId])
+  @@index([transactionId])
+  @@map("payme_fiscal_receipt")
 }
 
 // ---- Support chat (yordam) ----
