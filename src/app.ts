@@ -19,7 +19,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       ? { transport: { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } } }
       : true,
     bodyLimit: 20 * 1024 * 1024,
-    // Django trailing-slash URL'lari bilan moslik uchun
+    // Django trailing-slash URL'lari bilan moslik uchun 1
     routerOptions: { ignoreTrailingSlash: true },
     // nginx reverse-proxy orqasida real mijoz IP'si X-Forwarded-For'dan olinadi
     // (Payme IP whitelist uchun zarur). Backend faqat 127.0.0.1'da, nginx ishonchli.
