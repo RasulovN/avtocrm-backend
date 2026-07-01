@@ -3,6 +3,7 @@ import { prisma } from '../../db/prisma.js';
 import { BadRequest, NotFound } from '../../common/errors.js';
 import { pickLocalized, type Lang } from '../../common/i18n.js';
 import type { PlanCreateInput, PlanUpdateInput } from './plans.schemas.js';
+import { buildPricingOptions } from './plans.pricing.js';
 
 function decimalToString(value: Prisma.Decimal): string {
   return value.toString();
@@ -26,6 +27,12 @@ export function serializePlan(p: Plan, lang: Lang = 'uz') {
     description_uz_cyrl: p.descriptionUzCyrl,
     price: decimalToString(p.price),
     duration_days: p.durationDays,
+    // Uzoq muddat chegirmalari (%)
+    discount_3: p.discountM3,
+    discount_6: p.discountM6,
+    discount_12: p.discountM12,
+    // Har bir muddat bo'yicha hisoblangan narx (frontend ko'rsatishi uchun)
+    pricing: buildPricingOptions(p.price, p),
     features: p.features ?? null,
     max_stores: p.maxStores,
     max_users: p.maxUsers,
@@ -72,6 +79,9 @@ export async function createPlan(data: PlanCreateInput, lang: Lang = 'uz') {
       descriptionUzCyrl: data.description_uz_cyrl ?? null,
       price: data.price,
       durationDays: data.duration_days,
+      discountM3: data.discount_3 ?? 0,
+      discountM6: data.discount_6 ?? 0,
+      discountM12: data.discount_12 ?? 0,
       features: (data.features ?? undefined) as Prisma.InputJsonValue | undefined,
       maxStores: data.max_stores ?? null,
       maxUsers: data.max_users ?? null,
@@ -98,6 +108,9 @@ export async function updatePlan(id: number, data: PlanUpdateInput, lang: Lang =
         data.description_uz_cyrl === undefined ? undefined : data.description_uz_cyrl ?? null,
       price: data.price,
       durationDays: data.duration_days,
+      discountM3: data.discount_3,
+      discountM6: data.discount_6,
+      discountM12: data.discount_12,
       features:
         data.features === undefined
           ? undefined

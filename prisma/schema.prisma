@@ -229,6 +229,11 @@ model Plan {
   descriptionUzCyrl String?  @map("description_uz_cyrl")
   price             Decimal  @db.Decimal(15, 2)
   durationDays      Int      @map("duration_days") // obuna muddati (kun)
+  // Uzoq muddatga oldindan to'lovda chegirma foizi (0-90). 1 oy uchun chegirma yo'q.
+  // Summa = price * oylar * (1 - chegirma/100).
+  discountM3        Int      @default(0) @map("discount_m3")  // 3 oy uchun chegirma %
+  discountM6        Int      @default(0) @map("discount_m6")  // 6 oy uchun chegirma %
+  discountM12       Int      @default(0) @map("discount_m12") // 12 oy uchun chegirma %
   features          Json? // tarif imkoniyatlari
   maxStores         Int?     @map("max_stores")
   maxUsers          Int?     @map("max_users")

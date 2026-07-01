@@ -3,6 +3,9 @@ import { z } from 'zod';
 // Plan.price Decimal — string yoki number ko'rinishida kelishi mumkin, string'ga normalizatsiya qilamiz.
 const decimalInput = z.union([z.string(), z.number()]).transform((v) => String(v));
 
+// Chegirma foizi: 0-90 butun (uzoq muddat uchun).
+const discountPercent = z.coerce.number().int().min(0).max(90);
+
 // POST / — tarif yaratish (super admin, 4 tilli)
 export const planCreateSchema = z.object({
   name: z.string().min(1).max(100), // uz — asosiy, majburiy
@@ -15,6 +18,10 @@ export const planCreateSchema = z.object({
   description_uz_cyrl: z.string().nullish(),
   price: decimalInput,
   duration_days: z.number().int().positive(),
+  // Uzoq muddat chegirmalari (%) — ixtiyoriy, default 0.
+  discount_3: discountPercent.optional(),
+  discount_6: discountPercent.optional(),
+  discount_12: discountPercent.optional(),
   features: z.unknown().optional(), // ixtiyoriy JSON
   max_stores: z.number().int().nonnegative().nullable().optional(),
   max_users: z.number().int().nonnegative().nullable().optional(),
@@ -34,6 +41,9 @@ export const planUpdateSchema = z.object({
   description_uz_cyrl: z.string().nullish(),
   price: decimalInput.optional(),
   duration_days: z.number().int().positive().optional(),
+  discount_3: discountPercent.optional(),
+  discount_6: discountPercent.optional(),
+  discount_12: discountPercent.optional(),
   features: z.unknown().optional(),
   max_stores: z.number().int().nonnegative().nullable().optional(),
   max_users: z.number().int().nonnegative().nullable().optional(),

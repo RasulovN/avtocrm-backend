@@ -9,6 +9,7 @@ import { env } from '../../config/env.js';
 import { pushNotifications } from '../notifications/notification.service.js';
 import { computeActivationWindow } from './subscription.window.js';
 import { ALLOWED_MONTHS } from './subscriptions.schemas.js';
+import { discountForMonths, discountedAmount } from '../plans/plans.pricing.js';
 
 // ─────────────────────────────────────────────
 // Obuna holati o'zgarganda kompaniyaga bildirishnoma (tizim) + email.
@@ -176,8 +177,12 @@ export async function createSubscription(companyId: number, planId: number, mont
     }
   }
 
-  // Jami summa = tarif narxi * oylar soni.
-  const amount = isFree ? plan.price : plan.price.mul(periodMonths);
+  // Jami summa = tarif narxi * oylar soni * (1 - uzoq muddat chegirmasi).
+  // Chegirma faqat pullik tarifda va muddat > 1 oy bo'lganda qo'llanadi.
+  const discountPercent = isFree ? 0 : discountForMonths(plan, periodMonths);
+  const amount = isFree
+    ? plan.price
+    : discountedAmount(plan.price, periodMonths, discountPercent);
 
   // Mavjud to'lanmagan (pending) bir xil so'rovni qayta ishlatamiz — dublikatlar oldini olish.
   const existingPending = await prisma.subscription.findFirst({
