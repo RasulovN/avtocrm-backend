@@ -228,9 +228,16 @@ export async function deleteRole(id: number, scope: Scope, companyId: number | n
 //  FOYDALANUVCHI SERIALIZATSIYA
 // ============================================================
 
-type UserWithRole = Prisma.UserGetPayload<{ include: { role: true } }>;
+// Foydalanuvchi + rol + faol do'kon bog'lanishi (do'kon konteksti uchun).
+const userInclude = {
+  role: true,
+  storeLinks: { where: { isActive: true }, include: { store: { select: { id: true, name: true } } } },
+} satisfies Prisma.UserInclude;
+
+type UserWithRole = Prisma.UserGetPayload<{ include: typeof userInclude }>;
 
 function serializeUser(user: UserWithRole) {
+  const link = user.storeLinks?.[0] ?? null;
   return {
     id: user.id,
     full_name: user.fullName,
@@ -243,9 +250,35 @@ function serializeUser(user: UserWithRole) {
     // Frontend `u.role` (rol nomi) o'qiydi; `role_name` eski klientlar uchun saqlanadi.
     role: user.role?.name ?? null,
     role_name: user.role?.name ?? null,
+    // Do'kon konteksti (xodim biriktirilgan do'kon).
+    store_id: link ? link.storeId : null,
+    store_name: link ? link.store.name : null,
+    store_role: link ? link.role : null,
     created_at: user.createdAt,
     updated_at: user.updatedAt,
   };
+}
+
+// Xodimni bitta do'konga biriktiradi (avvalgi bog'lanishlarni o'chirib). companyId
+// bo'yicha do'kon tegishliligini tekshiradi. tx — tranzaksiya klienti.
+async function setUserStore(
+  tx: Prisma.TransactionClient,
+  userId: number,
+  companyId: number | null,
+  storeId: number,
+  role: 'm' | 's',
+): Promise<void> {
+  const store = await tx.store.findFirst({ where: { id: storeId, companyId: companyId ?? undefined }, select: { id: true } });
+  if (!store) {
+    throw new ValidationError({ store_id: "Do'kon topilmadi yoki sizning kompaniyangizga tegishli emas." });
+  }
+  // Bir xodim — bitta faol do'kon: avvalgilarni o'chiramiz.
+  await tx.storeUser.updateMany({ where: { userId, storeId: { not: storeId } }, data: { isActive: false } });
+  await tx.storeUser.upsert({
+    where: { userId_storeId: { userId, storeId } },
+    update: { isActive: true, role },
+    create: { userId, storeId, role, isActive: true },
+  });
 }
 
 // ============================================================
@@ -267,7 +300,7 @@ export async function listUsers(
   const [users, count] = await prisma.$transaction([
     prisma.user.findMany({
       where,
-      include: { role: true },
+      include: userInclude,
       orderBy: { createdAt: 'desc' },
       skip: pageParams.skip,
       take: pageParams.take,
@@ -323,7 +356,7 @@ export async function listAllUsers(
 
 // Foydalanuvchini scope/tenant doirasida topadi (boshqa tenant useriga tegib bo'lmaydi)
 async function getScopedUserOrThrow(id: number, scope: Scope, companyId: number | null) {
-  const user = await prisma.user.findUnique({ where: { id }, include: { role: true } });
+  const user = await prisma.user.findUnique({ where: { id }, include: userInclude });
   if (!user) throw new NotFound({ detail: 'Foydalanuvchi topilmadi.' });
   const w = userScopeWhere(scope, companyId);
   if (user.companyId !== ((w.companyId as number | null) ?? null)) {
@@ -371,24 +404,30 @@ export async function createUser(
   }
 
   const passwordHash = await hashPassword(input.password);
-  const user = await prisma.user.create({
-    data: {
-      fullName: input.full_name,
-      phoneNumber: input.phone_number ?? null,
-      email: input.email ?? null,
-      password: passwordHash,
-      companyId: scope === 'platform' ? null : companyId,
-      roleId: input.role_id,
-      // Platform (super admin panel) foydalanuvchisi — durable belgi. Shu orqali login
-      // qilganda kompaniya onboarding'i emas, super admin paneliga yo'naltiriladi.
-      isStaff: scope === 'platform',
-      // Admin tomonidan qo'shilgani uchun email tasdiqlangan deb hisoblanadi
-      isEmailVerified: true,
-      isActive: true,
-    },
-    include: { role: true },
+  const created = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: {
+        fullName: input.full_name,
+        phoneNumber: input.phone_number ?? null,
+        email: input.email ?? null,
+        password: passwordHash,
+        companyId: scope === 'platform' ? null : companyId,
+        roleId: input.role_id,
+        // Platform (super admin panel) foydalanuvchisi — durable belgi. Shu orqali login
+        // qilganda kompaniya onboarding'i emas, super admin paneliga yo'naltiriladi.
+        isStaff: scope === 'platform',
+        // Admin tomonidan qo'shilgani uchun email tasdiqlangan deb hisoblanadi
+        isEmailVerified: true,
+        isActive: true,
+      },
+    });
+    // Company scope: ixtiyoriy do'kon biriktirish (login'da shu do'kon konteksti faol bo'ladi).
+    if (scope === 'company' && input.store_id) {
+      await setUserStore(tx, user.id, companyId, input.store_id, input.store_role ?? 's');
+    }
+    return tx.user.findUnique({ where: { id: user.id }, include: userInclude });
   });
-  return serializeUser(user);
+  return serializeUser(created!);
 }
 
 export async function updateUser(
@@ -408,16 +447,27 @@ export async function updateUser(
     await assertRoleBelongsToScope(input.role_id, scope, companyId);
   }
 
-  const updated = await prisma.user.update({
-    where: { id },
-    data: {
-      fullName: input.full_name ?? undefined,
-      roleId: input.role_id ?? undefined,
-      isActive: input.is_active ?? undefined,
-    },
-    include: { role: true },
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id },
+      data: {
+        fullName: input.full_name ?? undefined,
+        roleId: input.role_id ?? undefined,
+        isActive: input.is_active ?? undefined,
+      },
+    });
+    // Company scope: do'kon biriktirish/o'zgartirish/olib tashlash.
+    if (scope === 'company' && input.store_id !== undefined) {
+      if (input.store_id === null) {
+        // Do'kondan chiqarish — barcha bog'lanishlarni nofaol qilamiz.
+        await tx.storeUser.updateMany({ where: { userId: id }, data: { isActive: false } });
+      } else {
+        await setUserStore(tx, id, companyId, input.store_id, input.store_role ?? 's');
+      }
+    }
+    return tx.user.findUnique({ where: { id }, include: userInclude });
   });
-  return serializeUser(updated);
+  return serializeUser(updated!);
 }
 
 export async function deleteUser(id: number, scope: Scope, companyId: number | null) {
