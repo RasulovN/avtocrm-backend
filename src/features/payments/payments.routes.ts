@@ -176,6 +176,9 @@ const paymeWebhookHandler: RouteHandlerMethod = async (req, reply) => {
 
   // 1) Auth: Authorization: Basic base64("Paycom:" + faol kalit)
   if (!isAuthorized(req)) {
+    // Diagnostika: qaysi metod auth'dan o'tmadi (kalit sizniki bilan mos emas).
+    const m = (req.body as { method?: unknown } | undefined)?.method;
+    req.log.warn({ ip: req.ip, method: typeof m === 'string' ? m : null }, 'Payme webhook: auth muvaffaqiyatsiz');
     return rpcError(reply, reqId, PaymeError.InsufficientPrivileges, NOT_AUTH_MSG);
   }
 
@@ -186,6 +189,10 @@ const paymeWebhookHandler: RouteHandlerMethod = async (req, reply) => {
   }
   const { method, params } = parsed.data;
   const p = (params ?? {}) as PaymeParams;
+
+  // Diagnostika: Payme'dan kelgan HAR BIR metodni loglaymiz — fiskal callback
+  // (SetFiscalData) umuman kelayotgan-kelmayotganini kuzatish uchun.
+  req.log.info({ paymeMethod: method, ip: req.ip }, 'Payme webhook so\'rovi');
 
   // 3) Metodni dispatch qilamiz
   try {
@@ -229,6 +236,9 @@ const paymeWebhookHandler: RouteHandlerMethod = async (req, reply) => {
         break;
       }
       default:
+        // Kutilmagan metod — to'liq body bilan loglaymiz (masalan, Payme fiskal
+        // ma'lumotni boshqa metod nomi bilan yuborsa, shu logdan ko'rinadi).
+        req.log.warn({ paymeMethod: method, body: req.body }, 'Payme webhook: noma\'lum metod');
         return rpcError(reply, reqId, PaymeError.MethodNotFound, METHOD_NOT_FOUND_MSG);
     }
     return rpcResult(reply, reqId, result);
