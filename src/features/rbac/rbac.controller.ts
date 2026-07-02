@@ -379,6 +379,9 @@ export async function createUser(
       password: passwordHash,
       companyId: scope === 'platform' ? null : companyId,
       roleId: input.role_id,
+      // Platform (super admin panel) foydalanuvchisi — durable belgi. Shu orqali login
+      // qilganda kompaniya onboarding'i emas, super admin paneliga yo'naltiriladi.
+      isStaff: scope === 'platform',
       // Admin tomonidan qo'shilgani uchun email tasdiqlangan deb hisoblanadi
       isEmailVerified: true,
       isActive: true,

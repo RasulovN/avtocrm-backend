@@ -156,8 +156,14 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
       if (!req.permissions.has(code)) {
         throw new Forbidden({ detail: 'Sizda bu amal uchun ruxsat yo\'q.' });
       }
-      // Obuna gating: alwaysAvailable bo'lmagan ruxsatlar faol obuna talab qiladi
-      if (!ALWAYS_AVAILABLE_CODES.has(code) && !req.subscriptionActive) {
+      // Obuna gating FAQAT kompaniya (company.*) imkoniyatlariga tegishli.
+      // Platform (super admin panel) ruxsatlari — `platform.*` — obuna talab qilmaydi,
+      // chunki platform adminlarda obuna/kompaniya bo'lmaydi.
+      if (
+        code.startsWith('company.') &&
+        !ALWAYS_AVAILABLE_CODES.has(code) &&
+        !req.subscriptionActive
+      ) {
         throw new Forbidden({ detail: 'Obuna faol emas. Iltimos, obunani faollashtiring.' });
       }
     };

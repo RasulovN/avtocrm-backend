@@ -250,8 +250,13 @@ export async function authRoutes(app: FastifyInstance) {
         : null;
 
     const permissions = [...req.permissions];
+    // Platform (super admin panel) foydalanuvchisi: super admin YOKI isStaff YOKI
+    // biror `platform.*` ruxsatga ega (eski platform foydalanuvchilari uchun ham).
+    const isPlatform =
+      user.isSuperuser || user.isStaff || permissions.some((c) => c.startsWith('platform.'));
     const menus = buildMenus(req.permissions, {
       isSuperuser: user.isSuperuser,
+      isPlatform,
       subscriptionActive: req.subscriptionActive,
     });
 
@@ -269,6 +274,7 @@ export async function authRoutes(app: FastifyInstance) {
       company: serializeCompany(req.company),
       subscription_active: req.subscriptionActive,
       is_superuser: user.isSuperuser,
+      is_platform: isPlatform,
       permissions,
       menus,
     };

@@ -117,10 +117,11 @@ export interface MenuItem {
 // `available` = ruxsat bor VA (alwaysAvailable yoki obuna faol yoki super admin).
 export function buildMenus(
   permissions: Set<string>,
-  opts: { isSuperuser: boolean; subscriptionActive: boolean },
+  opts: { isSuperuser: boolean; isPlatform: boolean; subscriptionActive: boolean },
 ): MenuItem[] {
-  // Super admin -> platform menyular; oddiy foydalanuvchi -> company menyular.
-  const targetScope: 'platform' | 'company' = opts.isSuperuser ? 'platform' : 'company';
+  // Platform (super admin panel) foydalanuvchisi -> platform menyular;
+  // kompaniya foydalanuvchisi -> company menyular.
+  const targetScope: 'platform' | 'company' = opts.isPlatform ? 'platform' : 'company';
 
   // Modul bo'yicha birinchi mos PermissionDef (label/scope manbasi).
   const byModule = new Map<string, PermissionDef>();
@@ -135,8 +136,9 @@ export function buildMenus(
 
   const menus: MenuItem[] = [];
   for (const perm of byModule.values()) {
+    // Platform menyular obuna gating'iga bog'liq emas; company menyular obuna talab qiladi.
     const available =
-      opts.isSuperuser ||
+      opts.isPlatform ||
       ALWAYS_AVAILABLE_CODES.has(perm.code) ||
       opts.subscriptionActive;
     menus.push({
