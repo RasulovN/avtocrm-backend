@@ -54,14 +54,12 @@ function sameDay(a: Date, b: Date): boolean {
   );
 }
 
-// Joriy oraliqdagi sotuvlarni o'qiydi (storeId filtri bilan).
-async function fetchSales(storeId: string | undefined, dr: DashboardDateRange) {
+// Joriy oraliqdagi sotuvlarni o'qiydi (kompaniya do'konlari bilan cheklangan).
+async function fetchSales(storeIds: number[], dr: DashboardDateRange) {
   const where: Prisma.SaleWhereInput = {
     createdAt: { gte: dr.currentFrom, lte: dr.currentTo },
+    storeId: { in: storeIds },
   };
-  if (storeId && storeId !== 'all') {
-    where.storeId = Number(storeId);
-  }
   return prisma.sale.findMany({
     where,
     select: { createdAt: true, totalAmount: true },
@@ -69,11 +67,11 @@ async function fetchSales(storeId: string | undefined, dr: DashboardDateRange) {
 }
 
 export async function buildChart(
-  storeId: string | undefined,
+  storeIds: number[],
   dr: DashboardDateRange,
   period: string,
 ): Promise<ChartData> {
-  const sales = await fetchSales(storeId, dr);
+  const sales = await fetchSales(storeIds, dr);
 
   if (period === 'weekly') return weeklyChart(sales, dr);
   if (period === 'monthly') return monthlyChart(sales, dr);

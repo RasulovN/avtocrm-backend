@@ -26,6 +26,21 @@ export async function buildApp(): Promise<FastifyInstance> {
     trustProxy: true,
   });
 
+  // Xavfsizlik sarlavhalari (helmet ekvivalenti — qo'shimcha bog'liqliksiz).
+  // JSON API bo'lgani uchun CSP shart emas; asosiy himoya sarlavhalarini qo'shamiz.
+  app.addHook('onSend', async (_req, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('X-DNS-Prefetch-Control', 'off');
+    reply.header('Cross-Origin-Resource-Policy', 'same-site');
+    if (!isDev) {
+      // HTTPS majburlash (nginx TLS terminatsiyasi orqasida).
+      reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    return payload;
+  });
+
   // CORS xavfsizligi: PRODUCTION'da `*` (barcha origin) bilan `credentials:true`
   // KOMBINATSIYASI xavfli (CSRF/cookie o'g'irlash), shuning uchun taqiqlanadi —
   // aniq frontend domen(lar)ini berish shart.

@@ -29,6 +29,26 @@ export async function getUserStores(user: User, companyId: number): Promise<numb
   return links.map((l) => l.storeId);
 }
 
+// Hisobot (dashboard / report / export) uchun ruxsat etilgan do'kon ID'larini
+// yagona joyda hal qiladi — HAR DOIM joriy kompaniya doirasida (tenant izolyatsiyasi).
+//   storeId berilmasa yoki 'all' -> foydalanuvchining shu kompaniyadagi barcha do'konlari
+//   storeId berilsa -> u shu ro'yxatda bo'lishi shart, aks holda Forbidden
+// Natija bo'sh massiv bo'lishi mumkin (do'koni yo'q kompaniya) — bu holda hisobot bo'sh
+// chiqadi, biroq HECH QACHON boshqa kompaniya ma'lumoti ko'rinmaydi.
+export async function resolveReportStoreIds(
+  user: User,
+  companyId: number,
+  storeId: string | undefined | null,
+): Promise<number[]> {
+  const allowed = await getUserStores(user, companyId);
+  if (!storeId || storeId === 'all') return allowed;
+  const sid = Number(storeId);
+  if (!Number.isInteger(sid) || !allowed.includes(sid)) {
+    throw new Forbidden({ detail: "Sizda bu do'kon hisobotiga ruxsat yo'q." });
+  }
+  return [sid];
+}
+
 // top_product_service.py: StoreFilterService.apply_store_filter
 // SaleItem queryslari uchun `sale.storeId` + `sale.companyId` bo'yicha where quradi.
 //   superuser:

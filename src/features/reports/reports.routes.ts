@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { Forbidden } from '../../common/errors.js';
 import { getCompanyId } from '../../common/tenant.js';
 import {
   dashboardQuerySchema,
@@ -9,32 +8,28 @@ import {
 import { getDashboard } from './dashboard.service.js';
 import { getTopProducts } from './topProduct.service.js';
 import { getReport } from './report.service.js';
+import { resolveReportStoreIds } from './storeScope.js';
 import { generateReportExcel } from './excelExport.service.js';
 import { resolveDateRange, validateDates } from './dateFilters.js';
 
 // ─────────────────────────────────────────────
-//  Reports app routes — Django apps/reports/urls.py bilan AYNAN bir xil.
-//  Prefix '/reports' index.ts'da. permission_classes -> onRequest hook.
+//  Reports app routes. Prefix '/reports' index.ts'da.
+//  TENANT IZOLYATSIYASI: barcha hisobotlar requireCompany + company.reports.*
+//  ruxsati bilan himoyalanadi va faqat kompaniyaning do'konlari doirasida
+//  ma'lumot qaytaradi (resolveReportStoreIds). Ilgari /dashboard/ va / (root)
+//  companyId bo'yicha filtrlanmagan edi — platforma bo'ylab sizib chiqardi.
 // ─────────────────────────────────────────────
 
 const VALID_PERIODS = ['weekly', 'monthly', 'yearly'] as const;
 
-// DRF IsAdminUser ekvivalenti — is_staff.
-async function requireAdmin(req: FastifyRequest): Promise<void> {
-  if (!req.authUser || !req.authUser.isStaff) {
-    throw new Forbidden();
-  }
-}
-
 export async function reportsRoutes(app: FastifyInstance) {
-  // ── DashboardAPIView — path('dashboard/') — IsAuthenticated ──
+  // ── DashboardAPIView — path('dashboard/') ──
   app.get(
     '/dashboard/',
-    { onRequest: app.authenticate },
+    { onRequest: [app.requireCompany, app.requirePermission('company.reports.view')] },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const q = dashboardQuerySchema.parse(req.query);
       const period = q.period ?? 'weekly';
-      const storeId = q.store_id ?? 'all';
 
       if (!(VALID_PERIODS as readonly string[]).includes(period)) {
         return reply.status(400).send({
@@ -42,7 +37,9 @@ export async function reportsRoutes(app: FastifyInstance) {
         });
       }
 
-      return getDashboard(period, storeId);
+      const companyId = getCompanyId(req);
+      const storeIds = await resolveReportStoreIds(req.authUser!, companyId, q.store_id);
+      return getDashboard(period, storeIds);
     },
   );
 
@@ -79,29 +76,27 @@ export async function reportsRoutes(app: FastifyInstance) {
     },
   );
 
-  // ── ReportsAPIView — path('') — IsAdminUser ──
-  app.get('/', { onRequest: requireAdmin }, async (req: FastifyRequest) => {
-    const q = reportQuerySchema.parse(req.query);
-    return getReport({
-      store_id: q.store_id,
-      filter: q.filter,
-      from: q.from,
-      to: q.to,
-    });
-  });
+  // ── ReportsAPIView — path('') ──
+  app.get(
+    '/',
+    { onRequest: [app.requireCompany, app.requirePermission('company.reports.view')] },
+    async (req: FastifyRequest) => {
+      const q = reportQuerySchema.parse(req.query);
+      const companyId = getCompanyId(req);
+      const storeIds = await resolveReportStoreIds(req.authUser!, companyId, q.store_id);
+      return getReport({ filter: q.filter, from: q.from, to: q.to }, storeIds);
+    },
+  );
 
-  // ── ReportsExcelExportAPIView — path('export/') — IsAuthenticated ──
+  // ── ReportsExcelExportAPIView — path('export/') ──
   app.get(
     '/export/',
     { onRequest: [app.requireCompany, app.requirePermission('company.reports.export')] },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const q = reportQuerySchema.parse(req.query);
-      const data = await getReport({
-        store_id: q.store_id,
-        filter: q.filter,
-        from: q.from,
-        to: q.to,
-      });
+      const companyId = getCompanyId(req);
+      const storeIds = await resolveReportStoreIds(req.authUser!, companyId, q.store_id);
+      const data = await getReport({ filter: q.filter, from: q.from, to: q.to }, storeIds);
 
       const file = await generateReportExcel(data);
 

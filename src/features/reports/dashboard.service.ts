@@ -22,12 +22,10 @@ function num(value: Prisma.Decimal | number | null | undefined): number {
   return value;
 }
 
-// _apply_store_filter: store_id='all'/null -> filter yo'q, aks holda storeId tengligi.
-function storeFilter(storeId: string | undefined): { storeId?: number } {
-  if (storeId && storeId !== 'all') {
-    return { storeId: Number(storeId) };
-  }
-  return {};
+// Tenant izolyatsiyasi: hisobot HAR DOIM kompaniyaning do'konlari bilan cheklanadi.
+// storeIds — resolveReportStoreIds (route) tomonidan hal qilingan ruxsatli do'kon ID'lari.
+function storeFilter(storeIds: number[]): { storeId: { in: number[] } } {
+  return { storeId: { in: storeIds } };
 }
 
 // _growth: ((cur - prev) / prev) * 100; prev=0 -> cur>0 ? 100.0 : 0.0; 1 kasrgacha.
@@ -45,10 +43,10 @@ function round1(n: number): number {
 // ── KPIService.get ──
 // 2 ta sales aggregate (joriy + oldingi) + low stock count.
 export async function getDashboardKpi(
-  storeId: string | undefined,
+  storeIds: number[],
   dr: DashboardDateRange,
 ) {
-  const sf = storeFilter(storeId);
+  const sf = storeFilter(storeIds);
 
   const cur = await prisma.sale.aggregate({
     where: { ...sf, createdAt: { gte: dr.currentFrom, lte: dr.currentTo } },
@@ -89,11 +87,11 @@ export async function getDashboardKpi(
 
 // ── TopPartsService.get ──
 // SaleItem -> product, sotilgan miqdor (sold) bo'yicha tartiblangan TOP 5.
-export async function getTopParts(storeId: string | undefined, dr: DashboardDateRange) {
+export async function getTopParts(storeIds: number[], dr: DashboardDateRange) {
   const saleWhere: Prisma.SaleItemWhereInput = {
     sale: {
       createdAt: { gte: dr.currentFrom, lte: dr.currentTo },
-      ...(storeId && storeId !== 'all' ? { storeId: Number(storeId) } : {}),
+      storeId: { in: storeIds },
     },
   };
 
@@ -122,8 +120,8 @@ export async function getTopParts(storeId: string | undefined, dr: DashboardDate
 
 // ── LowStockService.get ──
 // quantity < threshold, is_active; quantity bo'yicha o'sish tartibi; LIMIT 3.
-export async function getLowStock(storeId: string | undefined) {
-  const sf = storeFilter(storeId);
+export async function getLowStock(storeIds: number[]) {
+  const sf = storeFilter(storeIds);
   const batches = await prisma.productBatch.findMany({
     where: { ...sf, quantity: { lt: LOW_STOCK_THRESHOLD }, isActive: true },
     select: { id: true, quantity: true, product: { select: { name: true } } },
@@ -140,9 +138,9 @@ export async function getLowStock(storeId: string | undefined) {
 
 // ── RecentSalesService.get ──
 // Oxirgi N ta sotuv; mijoz bo'lmasa seller.full_name; minutesAgo.
-export async function getRecentSales(storeId: string | undefined) {
+export async function getRecentSales(storeIds: number[]) {
   const now = Date.now();
-  const sf = storeFilter(storeId);
+  const sf = storeFilter(storeIds);
   const sales = await prisma.sale.findMany({
     where: { ...sf },
     select: {
@@ -170,15 +168,15 @@ export async function getRecentSales(storeId: string | undefined) {
 
 // ── DashboardAPIView.get facade ──
 // period validatsiyasi view'da bo'ladi; bu yerda barcha bloklar yig'iladi.
-export async function getDashboard(period: string, storeId: string | undefined) {
+export async function getDashboard(period: string, storeIds: number[]) {
   const dr = resolveDashboardRange(period);
 
   const [kpi, topParts, lowStock, recentSales, chart] = await Promise.all([
-    getDashboardKpi(storeId, dr),
-    getTopParts(storeId, dr),
-    getLowStock(storeId),
-    getRecentSales(storeId),
-    buildChart(storeId, dr, period),
+    getDashboardKpi(storeIds, dr),
+    getTopParts(storeIds, dr),
+    getLowStock(storeIds),
+    getRecentSales(storeIds),
+    buildChart(storeIds, dr, period),
   ]);
 
   return {

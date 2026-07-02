@@ -129,17 +129,37 @@ export async function payForSubscription(companyId: number, subscriptionId: numb
   const amountTiyin = Math.round(Number(subscription.amount) * 100);
   if (amountTiyin <= 0) throw new BadRequest({ detail: "Bepul tarif uchun karta to'lovi shart emas." });
 
+  // Atomik "band qilish" (compare-and-set): faqat bitta parallel /pay so'rovi
+  // pending obunani egallaydi. Aks holda ikki bir vaqtdagi so'rov ikki marta
+  // karta yechib (double-charge) obunani ikki marta faollashtirishi mumkin edi.
+  const claimed = await prisma.subscription.updateMany({
+    where: { id: subscriptionId, companyId, status: 'pending' },
+    data: { status: 'processing' },
+  });
+  if (claimed.count === 0) {
+    throw new BadRequest({ detail: "Obuna allaqachon faollashtirilgan yoki to'lov jarayonida." });
+  }
+
   const account = { [env.PAYME_ACCOUNT_FIELD]: String(subscription.id) };
   // Fiskalizatsiya (MXIK) — chek soliqqa fiskallashtiriladi.
   const detail = buildFiscalDetail(subscription, amountTiyin);
 
-  // 1) Chek yaratish (fiskal `detail` bilan)
-  const created = await receiptsCreate(amountTiyin, account, detail);
-  const receiptId = created?.receipt?._id;
-  if (!receiptId) throw new SubscribeError(-1, 'Chek yaratilmadi');
+  let receiptId: string;
+  try {
+    // 1) Chek yaratish (fiskal `detail` bilan)
+    const created = await receiptsCreate(amountTiyin, account, detail);
+    receiptId = created?.receipt?._id ?? '';
+    if (!receiptId) throw new SubscribeError(-1, 'Chek yaratilmadi');
 
-  // 2) Token bilan to'lash (xato bo'lsa SubscribeError tashlanadi)
-  await receiptsPay(receiptId, token);
+    // 2) Token bilan to'lash (xato bo'lsa SubscribeError tashlanadi)
+    await receiptsPay(receiptId, token);
+  } catch (err) {
+    // To'lov amalga oshmadi — band qilishni bekor qilib, obunani pending'ga qaytaramiz.
+    await prisma.subscription
+      .updateMany({ where: { id: subscriptionId, status: 'processing' }, data: { status: 'pending' } })
+      .catch(() => { /* revert xatosi — keyingi urinishda yoki admin tuzatadi */ });
+    throw err;
+  }
 
   // 3) Tranzaksiya yozuvi + obuna/kompaniyani faollashtirish (atomik)
   const performTime = Date.now();

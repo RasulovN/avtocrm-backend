@@ -1,16 +1,22 @@
 import type { FastifyInstance } from 'fastify';
 import { getPageParams, paginate } from '../../common/pagination.js';
+import { rateLimit } from '../../plugins/rateLimit.js';
 import { leadCreateSchema, leadAdminCreateSchema, leadUpdateSchema } from './leads.schemas.js';
 import { createLead, createLeadAdmin, listLeads, updateLead, deleteLead, serializeLead } from './leads.service.js';
 
 export async function leadsRoutes(app: FastifyInstance) {
   // ===================== PUBLIC (landing "Demo so'rash") =====================
   // POST / — autentifikatsiyasiz zayavka qabul qilish.
-  app.post('/', async (req, reply) => {
-    const body = leadCreateSchema.parse(req.body);
-    const lead = await createLead(body);
-    return reply.status(201).send({ ok: true, id: lead.id });
-  });
+  // Rate-limit: ochiq (auth'siz) DB-yozuv endpoint'i — spam/flood'ga qarshi IP bo'yicha cheklov.
+  app.post(
+    '/',
+    { onRequest: rateLimit({ name: 'leads-create', max: 5, windowMs: 10 * 60_000 }) },
+    async (req, reply) => {
+      const body = leadCreateSchema.parse(req.body);
+      const lead = await createLead(body);
+      return reply.status(201).send({ ok: true, id: lead.id });
+    },
+  );
 
   // ===================== Super admin =====================
   // GET / — zayavkalar ro'yxati (status/source filtri + qidiruv + paginatsiya).

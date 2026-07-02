@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { prisma } from '../../db/prisma.js';
 import { checkPassword, hashPassword } from '../../common/password.js';
-import { createTokens, accessFromRefresh, verifyAccess } from '../../common/jwt.js';
+import { createTokens, accessFromRefresh, verifyAccess, verifyRefresh } from '../../common/jwt.js';
 import { setAuthCookies, clearAuthCookies } from '../../common/cookies.js';
-import { revokeToken } from '../../common/tokenBlacklist.js';
+import { revokeToken, isTokenRevoked } from '../../common/tokenBlacklist.js';
 import { rateLimit } from '../../plugins/rateLimit.js';
 import { sendMail } from '../../common/email.js';
 import { makeToken, checkToken, encodeUid, decodeUid } from '../../common/passwordReset.js';
@@ -52,15 +52,27 @@ function extractToken(req: FastifyRequest): string | null {
   return null;
 }
 
-// Logout: joriy access token'ni bekor qiladi (blacklist).
+// Logout: joriy access VA refresh token'larni bekor qiladi (blacklist).
+// Ilgari faqat access bekor qilinardi — 7 kunlik refresh token qolib, undan
+// yangi access token olish mumkin edi (logout amalda ishlamas edi).
 function revokeCurrentToken(req: FastifyRequest): void {
   const token = extractToken(req);
-  if (!token) return;
-  try {
-    const payload = verifyAccess(token);
-    if (payload.jti && payload.exp) revokeToken(payload.jti, payload.exp);
-  } catch {
-    /* yaroqsiz token — e'tiborsiz */
+  if (token) {
+    try {
+      const payload = verifyAccess(token);
+      if (payload.jti && payload.exp) revokeToken(payload.jti, payload.exp);
+    } catch {
+      /* yaroqsiz token — e'tiborsiz */
+    }
+  }
+  const refreshToken = (req.cookies as Record<string, string | undefined>)?.refresh_token;
+  if (refreshToken) {
+    try {
+      const payload = verifyRefresh(refreshToken);
+      if (payload.jti && payload.exp) revokeToken(payload.jti, payload.exp);
+    } catch {
+      /* yaroqsiz refresh — e'tiborsiz */
+    }
   }
 }
 
@@ -208,6 +220,11 @@ export async function authRoutes(app: FastifyInstance) {
       throw new Unauthorized({ detail: 'Refresh token topilmadi.' });
     }
     try {
+      // Bekor qilingan (logout qilingan) refresh token bilan yangi access berilmaydi.
+      const payload = verifyRefresh(refreshToken);
+      if (isTokenRevoked(payload.jti)) {
+        throw new Unauthorized({ detail: 'Refresh token bekor qilingan.' });
+      }
       const access = accessFromRefresh(refreshToken);
       reply.setCookie('access_token', access, {
         httpOnly: true,

@@ -133,6 +133,35 @@ export const env = {
 // production'da ogohlantiramiz. Soliq cheki noto'g'ri klassifikatsiya qilinmasligi uchun
 // o'z biznesingizga ro'yxatdan o'tgan IKPU/MXIK va package_code (soliqservis.uz / buxgalter)
 // kiritilishi kerak. Qiymatlarni bu yerda O'ZGARTIRMAYMIZ — faqat eslatib qo'yamiz.
+// ===== Payme production xavfsizlik tekshiruvi =====
+// Xavf: PAYME_TEST_MODE default = test (1). Agar production'ga TEST_MODE=0 (yoki
+// PAYME_SECRET_KEY) berilmasa, webhook SANDBOX test kalitini qabul qiladi — bu esa
+// haqiqiy to'lovsiz obuna faollashtirish (firibgarlik) imkonini beradi. Shu sababli
+// production'da test rejimida ishga tushishni bloklaymiz (ataylab xohlansa —
+// PAYME_ALLOW_TEST_IN_PROD=1 bilan ochiladi, lekin bu tavsiya etilmaydi).
+if (IS_PROD && PAYME_TEST_MODE && !PAYME_SECRET_KEY) {
+  if (process.env.PAYME_ALLOW_TEST_IN_PROD === '1') {
+    console.warn(
+      '[env] ⚠️  Payme PRODUCTION\'da TEST rejimida ishlamoqda (PAYME_ALLOW_TEST_IN_PROD=1). ' +
+        'Webhook sandbox kalitini qabul qiladi — firibgarlik xavfi. Faqat vaqtinchalik test uchun!',
+    );
+  } else {
+    throw new Error(
+      'Payme production\'da TEST rejimida (PAYME_TEST_MODE=1). Webhook sandbox kalitini qabul qilib, ' +
+        'to\'lovsiz obuna faollashtirishga yo\'l qo\'yadi. Production uchun PAYME_TEST_MODE=0 va haqiqiy ' +
+        'PAYME_KEY bering (yoki bilib turib test qilsangiz PAYME_ALLOW_TEST_IN_PROD=1).',
+    );
+  }
+}
+// Webhook IP whitelist bo'sh bo'lsa — barcha IP'lar ruxsat etiladi. Production'da
+// bu Basic-auth kalitini yagona to'siqqa aylantiradi; Payme IP'larini cheklash tavsiya etiladi.
+if (IS_PROD && PAYME_ALLOWED_IPS.length === 0) {
+  console.warn(
+    '[env] ⚠️  PAYME_ALLOWED_IPS bo\'sh — webhook barcha IP\'lardan qabul qilinadi. ' +
+      'Xavfsizlik uchun Payme server IP\'larini (yoki CIDR) kiriting.',
+  );
+}
+
 const FISCAL_PLACEHOLDER_MXIK = '10305008002000000';
 const FISCAL_PLACEHOLDER_PACKAGE = '1514296';
 if (

@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { prisma } from '../../db/prisma.js';
 import { checkPassword, hashPassword } from '../../common/password.js';
-import { createTokens, accessFromRefresh, verifyAccess } from '../../common/jwt.js';
+import { createTokens, accessFromRefresh, verifyAccess, verifyRefresh } from '../../common/jwt.js';
 import { setAuthCookies, clearAuthCookies } from '../../common/cookies.js';
-import { revokeToken } from '../../common/tokenBlacklist.js';
+import { revokeToken, isTokenRevoked } from '../../common/tokenBlacklist.js';
 import { recordAudit } from '../../common/audit.js';
 import { checkValidPhone } from '../../common/validators.js';
 import { getPageParams, paginate } from '../../common/pagination.js';
@@ -58,31 +58,65 @@ function extractToken(req: FastifyRequest): string | null {
   return null;
 }
 
-// Logout: joriy access token'ni bekor qiladi (blacklist).
+// Logout: joriy access VA refresh token'larni bekor qiladi (blacklist).
 function revokeCurrentToken(req: FastifyRequest): void {
   const token = extractToken(req);
-  if (!token) return;
-  try {
-    const payload = verifyAccess(token);
-    if (payload.jti && payload.exp) revokeToken(payload.jti, payload.exp);
-  } catch {
-    /* yaroqsiz token — e'tiborsiz */
+  if (token) {
+    try {
+      const payload = verifyAccess(token);
+      if (payload.jti && payload.exp) revokeToken(payload.jti, payload.exp);
+    } catch {
+      /* yaroqsiz token — e'tiborsiz */
+    }
+  }
+  const refreshToken = (req.cookies as Record<string, string | undefined>)?.refresh_token;
+  if (refreshToken) {
+    try {
+      const payload = verifyRefresh(refreshToken);
+      if (payload.jti && payload.exp) revokeToken(payload.jti, payload.exp);
+    } catch {
+      /* yaroqsiz refresh — e'tiborsiz */
+    }
   }
 }
 
-// IDOR himoyasi: so'rov egasi maqsad foydalanuvchiga kira oladimi?
-// Ruxsat: super admin YOKI o'zi YOKI aynan bir kompaniya a'zosi.
-async function assertCanAccessUser(req: FastifyRequest, targetId: number): Promise<void> {
+// IDOR + broken-access-control himoyasi.
+// action:
+//   'view'   — o'zini ko'rish erkin; boshqa a'zoni ko'rish `company.users.view` talab qiladi.
+//   'update' — o'zini tahrirlash erkin; boshqa a'zo `company.users.update` talab qiladi.
+//   'delete' — o'zini o'chirib bo'lmaydi; boshqa a'zo `company.users.delete` talab qiladi.
+// Har qanday holatda: boshqa kompaniya a'zosiga tegib bo'lmaydi va Owner (tizim roli)
+// yoki super admin foydalanuvchini bu eskicha endpoint orqali tahrirlab/o'chirib bo'lmaydi
+// (ular faqat /rbac yoki platform admin orqali boshqariladi).
+async function assertCanManageUser(
+  req: FastifyRequest,
+  targetId: number,
+  action: 'view' | 'update' | 'delete',
+): Promise<void> {
   const me = req.authUser!;
   if (me.isSuperuser) return;
-  if (me.id === targetId) return;
+
+  const isSelf = me.id === targetId;
+  if (isSelf && action === 'delete') {
+    throw new Forbidden({ detail: 'O\'zingizni o\'chira olmaysiz.' });
+  }
+  if (isSelf) return; // o'zini ko'rish / tahrirlash
+
+  // Boshqa foydalanuvchi — kompaniya mosligi + ruxsat + Owner/superuser himoyasi.
   const target = await prisma.user.findUnique({
     where: { id: targetId },
-    select: { companyId: true },
+    select: { companyId: true, isSuperuser: true, role: { select: { isSystem: true } } },
   });
   if (!target) throw new Forbidden();
   if (!me.companyId || target.companyId !== me.companyId) {
     throw new Forbidden({ detail: 'Bu foydalanuvchiga kirish huquqingiz yo\'q.' });
+  }
+  if (target.isSuperuser || target.role?.isSystem) {
+    throw new Forbidden({ detail: 'Bu foydalanuvchini bu yerda boshqarib bo\'lmaydi.' });
+  }
+  const code = `company.users.${action === 'view' ? 'view' : action}`;
+  if (!req.permissions.has(code)) {
+    throw new Forbidden({ detail: 'Sizda bu amal uchun ruxsat yo\'q.' });
   }
 }
 
@@ -166,6 +200,10 @@ export async function usersRoutes(app: FastifyInstance) {
       throw new Unauthorized({ detail: 'Refresh token topilmadi.' });
     }
     try {
+      const payload = verifyRefresh(refreshToken);
+      if (isTokenRevoked(payload.jti)) {
+        throw new Unauthorized({ detail: 'Refresh token bekor qilingan.' });
+      }
       const access = accessFromRefresh(refreshToken);
       reply.setCookie('access_token', access, {
         httpOnly: true,
@@ -250,14 +288,14 @@ export async function usersRoutes(app: FastifyInstance) {
 
   app.get('/:id/', { onRequest: app.authenticate }, async (req) => {
     const id = Number((req.params as { id: string }).id);
-    await assertCanAccessUser(req, id); // IDOR himoyasi
+    await assertCanManageUser(req, id, 'view');
     const user = await getUser(id);
     return serializeUser(user);
   });
 
   app.put('/:id/', { onRequest: app.authenticate }, async (req) => {
     const id = Number((req.params as { id: string }).id);
-    await assertCanAccessUser(req, id); // IDOR himoyasi
+    await assertCanManageUser(req, id, 'update');
     const body = userUpdateSchema.parse(req.body);
     if (body.phone_number) checkValidPhone(body.phone_number);
     const user = await updateUser(id, body);
@@ -266,7 +304,7 @@ export async function usersRoutes(app: FastifyInstance) {
 
   app.delete('/:id/', { onRequest: app.authenticate }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
-    await assertCanAccessUser(req, id); // IDOR himoyasi
+    await assertCanManageUser(req, id, 'delete');
     await deleteUser(id);
     return reply.status(204).send();
   });

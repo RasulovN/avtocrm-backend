@@ -47,13 +47,14 @@ export interface SaleWithRefund {
 export async function getBaseSales(
   dateFrom: Date,
   dateTo: Date,
-  storeId: number | null,
+  storeIds: number[],
 ): Promise<SaleWithRefund[]> {
   const where: Prisma.SaleWhereInput = {
     createdAt: { gte: dateFrom, lte: dateTo },
     status: { not: SALE_STATUS.RETURNED },
+    // Tenant izolyatsiyasi: faqat kompaniyaning do'konlari.
+    storeId: { in: storeIds },
   };
-  if (storeId !== null) where.storeId = storeId;
 
   const sales = await prisma.sale.findMany({
     where,
@@ -92,9 +93,9 @@ export async function getBaseSales(
 export async function getSummary(
   dateFrom: Date,
   dateTo: Date,
-  storeId: number | null,
+  storeIds: number[],
 ) {
-  const sales = await getBaseSales(dateFrom, dateTo, storeId);
+  const sales = await getBaseSales(dateFrom, dateTo, storeIds);
 
   let totalRevenue = D0;
   const customerSet = new Set<number>();
@@ -110,7 +111,7 @@ export async function getSummary(
     sale: {
       createdAt: { gte: dateFrom, lte: dateTo },
       status: { in: [SALE_STATUS.PAID, SALE_STATUS.PARTIAL] },
-      ...(storeId !== null ? { storeId } : {}),
+      storeId: { in: storeIds },
     },
   };
   const items = await prisma.saleItem.findMany({

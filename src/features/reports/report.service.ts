@@ -1,6 +1,5 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
-import { ValidationError } from '../../common/errors.js';
 import { dateFromISO, localDate, addDays, endOfDay } from './dateFilters.js';
 import {
   SALE_STATUS,
@@ -28,23 +27,6 @@ const D0 = new Prisma.Decimal(0);
 
 function round1(n: number): number {
   return Math.round(n * 10) / 10;
-}
-
-// ── ReportFilterService.resolve_store ──
-//   store_id null/'all' -> null (barcha do'kon)
-//   noto'g'ri qiymat -> ValidationError({store_id})
-//   do'kon topilmasa -> ValidationError({store_id})
-export async function resolveStore(storeId: string | undefined): Promise<number | null> {
-  if (!storeId || storeId === 'all') return null;
-  const sid = Number(storeId);
-  if (!Number.isInteger(sid)) {
-    throw new ValidationError({ store_id: "Noto'g'ri qiymat." });
-  }
-  const exists = await prisma.store.findUnique({ where: { id: sid }, select: { id: true } });
-  if (!exists) {
-    throw new ValidationError({ store_id: "Do'kon topilmadi." });
-  }
-  return sid;
 }
 
 // ── ReportFilterService.resolve_dates ──
@@ -84,9 +66,9 @@ export function resolveDates(
 export async function getBranchStatistics(
   dateFrom: Date,
   dateTo: Date,
-  storeId: number | null,
+  storeIds: number[],
 ) {
-  const sales = await getBaseSales(dateFrom, dateTo, storeId);
+  const sales = await getBaseSales(dateFrom, dateTo, storeIds);
 
   interface Acc {
     storeId: number;
@@ -125,14 +107,14 @@ export async function getBranchStatistics(
 export async function getCategoryStatistics(
   dateFrom: Date,
   dateTo: Date,
-  storeId: number | null,
+  storeIds: number[],
 ) {
   const items = await prisma.saleItem.findMany({
     where: {
       sale: {
         createdAt: { gte: dateFrom, lte: dateTo },
         status: { in: [SALE_STATUS.PAID, SALE_STATUS.PARTIAL] },
-        ...(storeId !== null ? { storeId } : {}),
+        storeId: { in: storeIds },
       },
     },
     select: {
@@ -167,14 +149,14 @@ export async function getCategoryStatistics(
 export async function getTopSellingProducts(
   dateFrom: Date,
   dateTo: Date,
-  storeId: number | null,
+  storeIds: number[],
 ) {
   const grouped = await prisma.saleItem.groupBy({
     by: ['productId'],
     where: {
       sale: {
         createdAt: { gte: dateFrom, lte: dateTo },
-        ...(storeId !== null ? { storeId } : {}),
+        storeId: { in: storeIds },
       },
     },
     _sum: { quantity: true, totalPrice: true },
@@ -209,13 +191,13 @@ export async function getTopSellingProducts(
 export async function getPaymentStructure(
   dateFrom: Date,
   dateTo: Date,
-  storeId: number | null,
+  storeIds: number[],
 ) {
   const grouped = await prisma.payment.groupBy({
     by: ['type'],
     where: {
       createdAt: { gte: dateFrom, lte: dateTo },
-      ...(storeId !== null ? { sale: { storeId } } : {}),
+      sale: { storeId: { in: storeIds } },
     },
     _count: { _all: true },
     _sum: { amount: true },
@@ -231,7 +213,7 @@ export async function getPaymentStructure(
     where: {
       createdAt: { gte: dateFrom, lte: dateTo },
       status: SALE_STATUS.DEBT,
-      ...(storeId !== null ? { storeId } : {}),
+      storeId: { in: storeIds },
     },
     _count: { _all: true },
   });
@@ -239,7 +221,7 @@ export async function getPaymentStructure(
     where: {
       createdAt: { gte: dateFrom, lte: dateTo },
       status: SALE_STATUS.DEBT,
-      ...(storeId !== null ? { storeId } : {}),
+      storeId: { in: storeIds },
     },
     select: { totalAmount: true, paidAmount: true },
   });
@@ -274,9 +256,9 @@ export async function getPaymentStructure(
 // ── DebtService.customer_debts ──
 // CustomerDebt (sale.storeId filtri) -> customer bo'yicha inc(type='i') - dec(type='d')
 // faqat musbat qarzlar.
-export async function getCustomerDebts(storeId: number | null) {
+export async function getCustomerDebts(storeIds: number[]) {
   const rows = await prisma.customerDebt.findMany({
-    where: { ...(storeId !== null ? { sale: { storeId } } : {}) },
+    where: { sale: { storeId: { in: storeIds } } },
     select: {
       amount: true,
       type: true,
@@ -315,9 +297,9 @@ export async function getCustomerDebts(storeId: number | null) {
 // ── DebtService.supplier_debts ──
 // SupplierTransaction (entry.storeId filtri) -> supplier bo'yicha
 // inc(type='in') - dec(type='pay'); faqat musbat qarzlar.
-export async function getSupplierDebts(storeId: number | null) {
+export async function getSupplierDebts(storeIds: number[]) {
   const rows = await prisma.supplierTransaction.findMany({
-    where: { ...(storeId !== null ? { entry: { storeId } } : {}) },
+    where: { entry: { storeId: { in: storeIds } } },
     select: {
       amount: true,
       type: true,
@@ -365,13 +347,16 @@ export interface ReportData {
   };
 }
 
-export async function getReport(params: {
-  store_id?: string;
-  filter?: string;
-  from?: string;
-  to?: string;
-}): Promise<ReportData> {
-  const storeId = await resolveStore(params.store_id);
+export async function getReport(
+  params: {
+    filter?: string;
+    from?: string;
+    to?: string;
+  },
+  // Tenant izolyatsiyasi: chaqiruvchi kompaniya/foydalanuvchiga ruxsat etilgan
+  // do'kon ID'lari (route qatlamida resolveReportStoreIds bilan hal qilinadi).
+  storeIds: number[],
+): Promise<ReportData> {
   const filterType = params.filter ?? 'monthly';
   const { dateFrom, dateTo } = resolveDates(filterType, params.from, params.to);
 
@@ -384,13 +369,13 @@ export async function getReport(params: {
     customerDebts,
     supplierDebts,
   ] = await Promise.all([
-    getSummary(dateFrom, dateTo, storeId),
-    getBranchStatistics(dateFrom, dateTo, storeId),
-    getCategoryStatistics(dateFrom, dateTo, storeId),
-    getTopSellingProducts(dateFrom, dateTo, storeId),
-    getPaymentStructure(dateFrom, dateTo, storeId),
-    getCustomerDebts(storeId),
-    getSupplierDebts(storeId),
+    getSummary(dateFrom, dateTo, storeIds),
+    getBranchStatistics(dateFrom, dateTo, storeIds),
+    getCategoryStatistics(dateFrom, dateTo, storeIds),
+    getTopSellingProducts(dateFrom, dateTo, storeIds),
+    getPaymentStructure(dateFrom, dateTo, storeIds),
+    getCustomerDebts(storeIds),
+    getSupplierDebts(storeIds),
   ]);
 
   return {
