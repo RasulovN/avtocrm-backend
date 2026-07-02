@@ -41,7 +41,13 @@ export const fiscalDataSchema = z.object({
 
 export const setFiscalDataSchema = z.object({
   id: strOrNum,
-  type: z.enum(['PERFORM', 'CANCEL']),
+  // type: Merchant API `SetFiscalData` 'PERFORM'|'CANCEL' yuboradi. Subscribe API
+  // `receipts.set_fiscal_data` esa `type` YUBORMASLIGI mumkin. Shuning uchun bardoshli:
+  // 'CANCEL' (yoki 'REVERSE') bo'lsa — CANCEL; aks holda (yo'q/'PERFORM'/'PAY'/boshqa) — PERFORM.
+  type: z.preprocess((v) => {
+    const s = typeof v === 'string' ? v.trim().toUpperCase() : '';
+    return s === 'CANCEL' || s === 'REVERSE' ? 'CANCEL' : 'PERFORM';
+  }, z.enum(['PERFORM', 'CANCEL'])),
   fiscal_data: fiscalDataSchema,
 });
 

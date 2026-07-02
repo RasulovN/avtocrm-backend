@@ -209,8 +209,11 @@ const paymeWebhookHandler: RouteHandlerMethod = async (req, reply) => {
       case 'GetStatement':
         result = await getStatement(p);
         break;
-      case 'SetFiscalData': {
-        // Fiskal (Soliq/OFD) chek — params `fiscal_data` bilan keladi, shuning uchun
+      // Merchant API: `SetFiscalData`. Subscribe API (karta oqimi): `receipts.set_fiscal_data`.
+      // Ikkalasi ham Payme -> bizga fiskal (Soliq/OFD) chekni yuboradi; bir xil handler.
+      case 'SetFiscalData':
+      case 'receipts.set_fiscal_data': {
+        // Fiskal chek — params `fiscal_data` bilan keladi, shuning uchun
         // umumiy sxema emas, maxsus DTO bilan parse qilamiz.
         const rawParams = (req.body as { params?: unknown }).params;
         const fiscalParsed = setFiscalDataSchema.safeParse(rawParams);
@@ -219,8 +222,8 @@ const paymeWebhookHandler: RouteHandlerMethod = async (req, reply) => {
         }
         const res = await handleSetFiscalData(fiscalParsed.data);
         req.log.info(
-          { setFiscalData: { type: res.type, subscriptionId: res.subscriptionId, matched: res.matchedTransaction } },
-          'Payme SetFiscalData: fiskal chek saqlandi',
+          { setFiscalData: { method, type: res.type, subscriptionId: res.subscriptionId, matched: res.matchedTransaction } },
+          'Payme fiskal chek qabul qilindi va saqlandi',
         );
         result = { success: true };
         break;

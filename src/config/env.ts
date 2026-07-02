@@ -129,4 +129,21 @@ export const env = {
   MEDIA_URL: process.env.MEDIA_URL ?? '/media/',
 };
 
+// Fiskal kodlar Payme hujjatidagi UMUMIY namuna qiymatlar bilan bir xil bo'lsa —
+// production'da ogohlantiramiz. Soliq cheki noto'g'ri klassifikatsiya qilinmasligi uchun
+// o'z biznesingizga ro'yxatdan o'tgan IKPU/MXIK va package_code (soliqservis.uz / buxgalter)
+// kiritilishi kerak. Qiymatlarni bu yerda O'ZGARTIRMAYMIZ — faqat eslatib qo'yamiz.
+const FISCAL_PLACEHOLDER_MXIK = '10305008002000000';
+const FISCAL_PLACEHOLDER_PACKAGE = '1514296';
+if (
+  IS_PROD &&
+  (env.PAYME_FISCAL_MXIK === FISCAL_PLACEHOLDER_MXIK ||
+    env.PAYME_FISCAL_PACKAGE_CODE === FISCAL_PLACEHOLDER_PACKAGE)
+) {
+  console.warn(
+    '[env] ⚠️  PAYME_FISCAL_MXIK / PAYME_FISCAL_PACKAGE_CODE namunaviy (default) qiymatda. ' +
+      'Soliq cheki to\'g\'ri klassifikatsiya bo\'lishi uchun o\'z biznesingiz IKPU/MXIK kodini kiriting.',
+  );
+}
+
 export const isDev = env.NODE_ENV !== 'production';
