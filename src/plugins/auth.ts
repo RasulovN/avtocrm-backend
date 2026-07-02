@@ -16,6 +16,8 @@ declare module 'fastify' {
     company: Company | null;
     permissions: Set<string>;
     subscriptionActive: boolean;
+    // Kompaniya administrator tomonidan nofaollashtirilgan (isActive=false) — tizimga kirish taqiqlanadi.
+    companyDisabled: boolean;
     store: Store | null;
     storeUser: StoreUser | null;
   }
@@ -57,6 +59,7 @@ async function resolveContext(req: FastifyRequest): Promise<void> {
   req.company = null;
   req.permissions = new Set();
   req.subscriptionActive = false;
+  req.companyDisabled = false;
   req.store = null;
   req.storeUser = null;
 
@@ -86,6 +89,8 @@ async function resolveContext(req: FastifyRequest): Promise<void> {
   req.authUser = plainUser as User;
   req.companyId = user.companyId;
   req.company = (company as Company) ?? null;
+  // Kompaniya admin tomonidan nofaollashtirilgan bo'lsa — kirish taqiqlanadi (guardlarda 403).
+  req.companyDisabled = !!(company && company.isActive === false);
 
   // Ruxsatlar to'plami
   if (user.isSuperuser) {
@@ -116,12 +121,20 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
   app.decorateRequest('company', null);
   app.decorateRequest('permissions', null as unknown as Set<string>);
   app.decorateRequest('subscriptionActive', false);
+  app.decorateRequest('companyDisabled', false);
   app.decorateRequest('store', null);
   app.decorateRequest('storeUser', null);
 
   app.addHook('onRequest', resolveContext);
 
+  // Kompaniya nofaollashtirilgan foydalanuvchiga aniq xabar (barcha guardlar shundan foydalanadi).
+  const COMPANY_DISABLED = {
+    detail: 'Sizning tizimingiz administrator tomonidan faolsizlantirilgan. Iltimos, qo\'llab-quvvatlash bilan bog\'laning.',
+    code: 'company_disabled',
+  };
+
   app.decorate('authenticate', async (req: FastifyRequest) => {
+    if (req.companyDisabled) throw new Forbidden(COMPANY_DISABLED);
     if (!req.authUser) throw new Unauthorized();
   });
 
@@ -138,6 +151,7 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
   });
 
   app.decorate('requireCompany', async (req: FastifyRequest) => {
+    if (req.companyDisabled) throw new Forbidden(COMPANY_DISABLED);
     if (!req.authUser) throw new Unauthorized();
     if (!req.companyId) throw new Forbidden({ detail: 'Siz hech qaysi kompaniyaga biriktirilmagansiz.' });
   });
@@ -151,6 +165,7 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
 
   app.decorate('requirePermission', (code: string) => {
     return async (req: FastifyRequest) => {
+      if (req.companyDisabled) throw new Forbidden(COMPANY_DISABLED);
       if (!req.authUser) throw new Unauthorized();
       if (req.authUser.isSuperuser) return; // super admin -> hammasi ochiq
       if (!req.permissions.has(code)) {
@@ -164,7 +179,11 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
         !ALWAYS_AVAILABLE_CODES.has(code) &&
         !req.subscriptionActive
       ) {
-        throw new Forbidden({ detail: 'Obuna faol emas. Iltimos, obunani faollashtiring.' });
+        // `code: 'subscription_inactive'` — frontend menyularni bloklab, /subscription'ga yo'naltiradi.
+        throw new Forbidden({
+          detail: 'Obuna faol emas. Iltimos, obunani faollashtiring.',
+          code: 'subscription_inactive',
+        });
       }
     };
   });

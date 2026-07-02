@@ -124,16 +124,31 @@ export async function updatePlan(id: number, data: PlanUpdateInput, lang: Lang =
   return serializePlan(plan, lang);
 }
 
-// O'chirish: agar tarifga bog'langan obuna bo'lsa — FK himoyasi (400).
-// Tavsiya: o'chirish o'rniga is_active=false qilish.
+// O'chirish qoidasi: tarifga FAOL obuna bo'lgan (kompaniya hozir foydalanayotgan)
+// bo'lsa — o'chirib bo'lmaydi. Faol obuna bo'lmasa (barcha kompaniyalar boshqa tarifga
+// o'tkazilgan / bekor qilingan) — tarif o'chiriladi. Tarixiy (bekor/tugagan/pending)
+// obuna yozuvlari birga o'chadi; to'lov (PaymeTransaction) yozuvlari esa saqlanadi
+// (schema'da subscriptionId onDelete=SetNull — to'lov tarixi yo'qolmaydi).
 export async function deletePlan(id: number) {
   await getPlan(id);
-  const linked = await prisma.subscription.count({ where: { planId: id } });
-  if (linked > 0) {
+  const now = new Date();
+  const activeCount = await prisma.subscription.count({
+    where: {
+      planId: id,
+      status: 'active',
+      OR: [{ endAt: null }, { endAt: { gt: now } }],
+    },
+  });
+  if (activeCount > 0) {
     throw new BadRequest({
       detail:
-        "Bu tarifga bog'langan obunalar mavjud. O'chirib bo'lmaydi. Buning o'rniga is_active=false qiling.",
+        "Bu tarifga faol obuna bo'lgan kompaniyalar bor. Avval ularni boshqa tarifga o'tkazing yoki obunani bekor qiling.",
+      code: 'plan_has_active_subscriptions',
     });
   }
-  await prisma.plan.delete({ where: { id } });
+  // Faol obuna yo'q — tarixiy obunalarni (agar bo'lsa) va tarifni birga o'chiramiz.
+  await prisma.$transaction(async (tx) => {
+    await tx.subscription.deleteMany({ where: { planId: id } });
+    await tx.plan.delete({ where: { id } });
+  });
 }

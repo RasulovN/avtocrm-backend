@@ -149,13 +149,19 @@ export async function authRoutes(app: FastifyInstance) {
     // login = telefon raqami YOKI email. Ikkalasi bo'yicha qidiramiz.
     const user = await prisma.user.findFirst({
       where: { OR: [{ email: body.login }, { phoneNumber: body.login }] },
-      include: { role: { select: { name: true } } },
+      include: { role: { select: { name: true } }, company: { select: { isActive: true } } },
     });
     if (!user || !(await checkPassword(body.password, user.password))) {
       throw new ValidationError({ detail: 'Login yoki parol noto\'g\'ri!' });
     }
     if (!user.isActive) {
       throw new ValidationError({ detail: 'Foydalanuvchi faol emas!' });
+    }
+    // Kompaniya administrator tomonidan nofaollashtirilgan bo'lsa — kirishga ruxsat berilmaydi.
+    if (user.company && user.company.isActive === false) {
+      throw new ValidationError({
+        detail: 'Sizning tizimingiz administrator tomonidan faolsizlantirilgan. Iltimos, qo\'llab-quvvatlash bilan bog\'laning.',
+      });
     }
 
     const tokens = createTokens(user.id);

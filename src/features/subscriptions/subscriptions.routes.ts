@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { getPageParams, paginate } from '../../common/pagination.js';
+import { BadRequest } from '../../common/errors.js';
 import {
   subscriptionCreateSchema,
   subscriptionPatchSchema,
@@ -12,6 +13,7 @@ import {
   cancelMyPendingSubscription,
   listAllSubscriptions,
   patchSubscription,
+  changeSubscriptionPlan,
   setSubscriptionFiscal,
 } from './subscriptions.service.js';
 import { getLimitsAndUsage } from './planLimits.js';
@@ -108,6 +110,21 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       const id = Number((req.params as { id: string }).id);
       const body = subscriptionPatchSchema.parse(req.body);
       return patchSubscription(id, body.action, body.days);
+    },
+  );
+
+  // PATCH /:id/plan/ — obunaning tarifini o'zgartirish (kompaniya tarifini almashtirish).
+  app.patch(
+    '/:id/plan/',
+    { onRequest: app.requirePermission('platform.subscriptions.manage') },
+    async (req) => {
+      const id = Number((req.params as { id: string }).id);
+      const body = (req.body ?? {}) as { plan_id?: number; months?: number };
+      const planId = Number(body.plan_id);
+      if (!Number.isInteger(planId) || planId <= 0) {
+        throw new BadRequest({ detail: 'plan_id majburiy.' });
+      }
+      return changeSubscriptionPlan(id, planId, body.months);
     },
   );
 

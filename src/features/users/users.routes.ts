@@ -131,12 +131,20 @@ export async function usersRoutes(app: FastifyInstance) {
     const body = loginSchema.parse(req.body);
     checkValidPhone(body.phone_number);
 
-    const user = await prisma.user.findUnique({ where: { phoneNumber: body.phone_number } });
+    const user = await prisma.user.findUnique({
+      where: { phoneNumber: body.phone_number },
+      include: { company: { select: { isActive: true } } },
+    });
     if (!user || !(await checkPassword(body.password, user.password))) {
       throw new ValidationError({ message: "phone_number yoki parol noto'g'ri!" });
     }
     if (!user.isActive) {
       throw new ValidationError({ message: 'Foydalanuvchi faol emas!' });
+    }
+    if (user.company && user.company.isActive === false) {
+      throw new ValidationError({
+        message: 'Sizning tizimingiz administrator tomonidan faolsizlantirilgan. Iltimos, qo\'llab-quvvatlash bilan bog\'laning.',
+      });
     }
 
     const tokens = createTokens(user.id);

@@ -471,6 +471,45 @@ export async function patchSubscription(
 }
 
 // ─────────────────────────────────────────────
+// PATCH /:id/plan — super admin kompaniya obunasining TARIFINI o'zgartiradi.
+// Yangi tarif narxi (muddat + chegirma bilan) bo'yicha amount qayta hisoblanadi.
+// Obuna faol bo'lsa — muddat (endAt) yangi tarif duration'iga ko'ra qayta hisoblanadi.
+// ─────────────────────────────────────────────
+export async function changeSubscriptionPlan(id: number, planId: number, months?: number) {
+  const subscription = await prisma.subscription.findUnique({ where: { id } });
+  if (!subscription) throw new NotFound({ detail: 'Obuna topilmadi.' });
+
+  const plan = await prisma.plan.findUnique({ where: { id: planId } });
+  if (!plan || !plan.isActive) {
+    throw new BadRequest({ detail: 'Tanlangan tarif topilmadi yoki faol emas.' });
+  }
+
+  const isFree = plan.price.lessThanOrEqualTo(0);
+  const periodMonths = isFree
+    ? 1
+    : (ALLOWED_MONTHS as readonly number[]).includes(months ?? subscription.periodMonths)
+      ? (months ?? subscription.periodMonths)
+      : 1;
+
+  const discountPercent = isFree ? 0 : discountForMonths(plan, periodMonths);
+  const amount = isFree ? plan.price : discountedAmount(plan.price, periodMonths, discountPercent);
+
+  // Faol obuna — muddatni yangi tarif bo'yicha qayta hisoblaymiz (startAt saqlanadi).
+  const active = isActiveSub(subscription);
+  const startAt = active ? (subscription.startAt ?? new Date()) : subscription.startAt;
+  const endAt = active
+    ? new Date((startAt as Date).getTime() + plan.durationDays * periodMonths * 24 * 60 * 60 * 1000)
+    : subscription.endAt;
+
+  const updated = await prisma.subscription.update({
+    where: { id },
+    data: { planId: plan.id, amount, periodMonths, startAt, endAt },
+    include: { plan: true, company: { select: { id: true, name: true } } },
+  });
+  return serializeSubscription(updated);
+}
+
+// ─────────────────────────────────────────────
 // PUT /:id/fiscal — super admin obunaga soliq (OFD) fiskal chek havolasini biriktiradi.
 // Payme kabinetidagi to'lov cheki havolasini (https://ofd.soliq.uz/epi?...) qo'yadi.
 // Mijoz keyin uni QR + havola sifatida ko'radi (qonuniy talab).

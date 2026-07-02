@@ -365,7 +365,17 @@ export async function updateCompanyStatus(id: number, data: StatusUpdateInput) {
   if (!existing) throw new NotFound({ detail: 'Kompaniya topilmadi.' });
 
   const updateData: Prisma.CompanyUpdateInput = {};
-  if (data.status !== undefined) updateData.status = data.status;
+  if (data.status !== undefined) {
+    updateData.status = data.status;
+    // Admin "To'xtatish" (suspended) => kompaniya nofaol: foydalanuvchilar tizimga
+    // KIROLMAYDI ("faolsizlantirilgan" xabari). "Faollashtirish" (active) => qayta faol.
+    // DIQQAT: Payme to'lov bekor qilinganda status='suspended' TO'G'RIDAN-TO'G'RI
+    // (payme.service) o'rnatiladi va isActive tegilmaydi — u holda login ochiq qoladi,
+    // faqat obuna gating ishlaydi. Bu yer faqat ADMIN qo'lda o'zgartirishi uchun.
+    if (data.status === 'suspended') updateData.isActive = false;
+    else if (data.status === 'active') updateData.isActive = true;
+  }
+  // Aniq is_active berilsa — u ustun (status'dan keyin qo'llanadi).
   if (data.is_active !== undefined) updateData.isActive = data.is_active;
 
   await prisma.company.update({ where: { id }, data: updateData });

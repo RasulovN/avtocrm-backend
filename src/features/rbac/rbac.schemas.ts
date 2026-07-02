@@ -31,6 +31,10 @@ export const userCreateSchema = z
     email: z.string().trim().min(1).nullable().optional(),
     password: z.string().min(8, 'Parol kamida 8 ta belgidan iborat'),
     role_id: z.number().int().positive(),
+    // Ixtiyoriy: xodimni do'konga biriktirish (company scope). Login qilganda shu
+    // do'kon konteksti (X-Store-ID) faol bo'ladi. store_role: m=menejer, s=sotuvchi.
+    store_id: z.number().int().positive().nullable().optional(),
+    store_role: z.enum(['m', 's']).optional(),
   })
   .superRefine((d, ctx) => {
     if (!d.phone_number && !d.email) {
@@ -47,6 +51,9 @@ export const userUpdateSchema = z.object({
   full_name: z.string().trim().min(1).optional(),
   role_id: z.number().int().positive().optional(),
   is_active: z.boolean().optional(),
+  // Do'kon biriktirish/o'zgartirish. null => do'kondan chiqarish.
+  store_id: z.number().int().positive().nullable().optional(),
+  store_role: z.enum(['m', 's']).optional(),
 });
 
 export type RoleCreateInput = z.infer<typeof roleCreateSchema>;
