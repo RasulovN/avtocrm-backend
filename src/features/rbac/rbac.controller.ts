@@ -10,6 +10,7 @@ import {
   COMPANY_PERMISSION_CODES,
 } from './permissions.catalog.js';
 import { setRolePermissions } from './rbac.service.js';
+import { assertCanAddUser } from '../subscriptions/planLimits.js';
 import type {
   RoleCreateInput,
   RoleUpdateInput,
@@ -349,6 +350,12 @@ export async function createUser(
   // Telefon/email validatsiyasi
   if (input.phone_number) checkValidPhone(input.phone_number);
   if (input.email) checkValidEmail(input.email);
+
+  // Tarif limiti: kompaniya doirasida yangi foydalanuvchi qo'shishda tarifdagi
+  // foydalanuvchi limitidan oshib bo'lmaydi (platform scope'ga tegishli emas).
+  if (scope === 'company' && companyId != null) {
+    await assertCanAddUser(companyId);
+  }
 
   // role_id albatta shu scope/tenant roliga tegishli bo'lishi shart
   await assertRoleBelongsToScope(input.role_id, scope, companyId);

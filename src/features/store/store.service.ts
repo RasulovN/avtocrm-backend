@@ -2,6 +2,7 @@ import type { Prisma, Store, StoreUser, User } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { NotFound, ValidationError } from '../../common/errors.js';
 import { checkValidPhone } from '../../common/validators.js';
+import { assertCanAddStore } from '../subscriptions/planLimits.js';
 import type { StoreCreateInput, StoreUpdateInput } from './store.schemas.js';
 
 // ── Tiplar ────────────────────────────────────────────────
@@ -116,6 +117,8 @@ export async function createStore(params: {
   const { user, companyId, data } = params;
 
   // Avtorizatsiya route'da `company.stores.manage` (RBAC) orqali. Kompaniya egasi/menejeri yaratadi.
+  // Tarif limiti: joriy tarifda ruxsat etilgan do'kon sonidan oshib bo'lmaydi.
+  await assertCanAddStore(companyId);
   // StoreCreateSerializer.validate: telefon raqamni tekshirish
   checkValidPhone(data.phone_number);
 

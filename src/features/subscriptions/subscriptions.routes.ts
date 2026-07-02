@@ -14,6 +14,7 @@ import {
   patchSubscription,
   setSubscriptionFiscal,
 } from './subscriptions.service.js';
+import { getLimitsAndUsage } from './planLimits.js';
 
 export async function subscriptionsRoutes(app: FastifyInstance) {
   // ===================== Kompaniya tomoni =====================
@@ -39,6 +40,12 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
   // GET /me/active/ — faol obuna yoki null + qolgan kunlar.
   app.get('/me/active/', { onRequest: app.requireCompany }, async (req) => {
     return getMyActiveSubscription(req.companyId!);
+  });
+
+  // GET /me/limits/ — joriy tarif limitlari + foydalanish (do'kon/foydalanuvchi soni).
+  // Frontend "Add" tugmalarini bloklash va "used/max" ko'rsatish uchun ishlatadi.
+  app.get('/me/limits/', { onRequest: app.requireCompany }, async (req) => {
+    return getLimitsAndUsage(req.companyId!);
   });
 
   // GET /me/history/ — to'lovlar/obuna tarixi (pagination).
