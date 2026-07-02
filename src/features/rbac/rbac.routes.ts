@@ -22,6 +22,7 @@ import {
   updateUser,
   deleteUser,
   deleteAnyUser,
+  listAssignableStores,
 } from './rbac.controller.js';
 
 // Super admin tekshiruvi: isSuperuser YOKI platform.roles.manage ruxsati bo'lsa.
@@ -156,6 +157,15 @@ export async function rbacRoutes(app: FastifyInstance) {
     { onRequest: [app.authenticate, app.requireCompany, app.requirePermission('company.users.view')] },
     async (req) => {
       return listAssignableRoles('company', req.companyId);
+    },
+  );
+
+  // Xodimni biriktirish uchun kompaniya do'konlari (company.users.view bilan ochiq).
+  app.get(
+    '/company/assignable-stores/',
+    { onRequest: [app.authenticate, app.requireCompany, app.requirePermission('company.users.view')] },
+    async (req) => {
+      return listAssignableStores(req.companyId);
     },
   );
 

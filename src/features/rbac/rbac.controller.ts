@@ -124,6 +124,18 @@ export async function listAssignableRoles(scope: Scope, companyId: number | null
   return roles.map((r) => ({ id: r.id, name: r.name, is_system: r.isSystem }));
 }
 
+// Xodimni biriktirish uchun kompaniya do'konlari (yengil ro'yxat). `company.users.view`
+// ruxsati bilan ochiq — do'kon boshqaruvchisi ruxsati (`company.stores.view`) shart emas.
+export async function listAssignableStores(companyId: number | null) {
+  if (!companyId) return [];
+  const stores = await prisma.store.findMany({
+    where: { companyId, isActive: true },
+    select: { id: true, name: true },
+    orderBy: { name: 'asc' },
+  });
+  return stores;
+}
+
 // Rolni id bo'yicha topadi va scope/tenant mosligini tekshiradi (cross-scope/cross-tenant himoyasi)
 async function getScopedRoleOrThrow(id: number, scope: Scope, companyId: number | null) {
   const role = await prisma.role.findUnique({ where: { id }, include: roleInclude });

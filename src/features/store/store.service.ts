@@ -27,13 +27,19 @@ function serializeSeller(link: StoreUserWithUser) {
 }
 
 // Django StoreListSerializer: name/address translated (modeltranslation -> name/address)
+// + RAW tarjima maydonlari (name_uz_cyrl, ...) — frontend tahrirlash formasi ro'yxat
+// qatoridan ochiladi; bular bo'lmasa kril qiymatlari bo'sh ko'rinib, saqlashda o'chib ketardi.
 function serializeStoreList(store: StoreWithLinks) {
   return {
     id: store.id,
     type: store.type,
     name: store.name,
+    name_uz: store.name,
+    name_uz_cyrl: store.nameUzCyrl,
     phone_number: store.phoneNumber,
     address: store.address,
+    address_uz: store.address,
+    address_uz_cyrl: store.addressUzCyrl,
     latitude: decimalToString(store.latitude),
     longitude: decimalToString(store.longitude),
     is_active: store.isActive,
