@@ -547,3 +547,91 @@ export async function setSubscriptionFiscal(subscriptionId: number, fiscalUrl: s
   });
   return serializeSubscription(updated!);
 }
+
+// ─────────────────────────────────────────────
+// GET /stats/ — super admin: obunalar bo'yicha vaqt qatori statistikasi.
+//   period: week (7 kun, kunlik) | month (30 kun, kunlik) | year (12 oy, oylik)
+// Har bucket: yangi obunalar (createdAt), faollashganlar + daromad (startAt,
+// status active/expired — ya'ni haqiqatda faollashtirilgan obunalar).
+// O'sish foizi: joriy davr vs oldingi teng uzunlikdagi davr.
+// ─────────────────────────────────────────────
+export type StatsPeriod = 'week' | 'month' | 'year';
+
+export async function getSubscriptionStats(period: StatsPeriod) {
+  const now = new Date();
+  const buckets: { key: string; start: Date; end: Date }[] = [];
+
+  if (period === 'year') {
+    for (let i = 11; i >= 0; i--) {
+      const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+      const key = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}`;
+      buckets.push({ key, start, end });
+    }
+  } else {
+    const days = period === 'week' ? 7 : 30;
+    for (let i = days - 1; i >= 0; i--) {
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i + 1);
+      const key = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+      buckets.push({ key, start, end });
+    }
+  }
+
+  const rangeStart = buckets[0].start;
+  const rangeEnd = buckets[buckets.length - 1].end;
+  // Oldingi teng davr — o'sishni solishtirish uchun.
+  const prevStart = new Date(rangeStart.getTime() - (rangeEnd.getTime() - rangeStart.getTime()));
+
+  const subs = await prisma.subscription.findMany({
+    where: {
+      OR: [
+        { createdAt: { gte: prevStart, lt: rangeEnd } },
+        { startAt: { gte: prevStart, lt: rangeEnd } },
+      ],
+    },
+    select: { createdAt: true, startAt: true, status: true, amount: true },
+  });
+
+  // Faollashtirilgan deb: hozirgi holati active yoki expired (bir paytlar faol bo'lgan).
+  const isActivated = (s: { status: string; startAt: Date | null }) =>
+    s.startAt !== null && (s.status === 'active' || s.status === 'expired');
+
+  const series = buckets.map((b) => {
+    const created = subs.filter((s) => s.createdAt >= b.start && s.createdAt < b.end);
+    const activated = subs.filter((s) => isActivated(s) && s.startAt! >= b.start && s.startAt! < b.end);
+    return {
+      date: b.key,
+      new_count: created.length,
+      activated_count: activated.length,
+      revenue: activated.reduce((sum, s) => sum + Number(s.amount), 0),
+    };
+  });
+
+  const sumWindow = (from: Date, to: Date) => {
+    const created = subs.filter((s) => s.createdAt >= from && s.createdAt < to);
+    const activated = subs.filter((s) => isActivated(s) && s.startAt! >= from && s.startAt! < to);
+    return {
+      new_count: created.length,
+      revenue: activated.reduce((sum, s) => sum + Number(s.amount), 0),
+    };
+  };
+
+  const current = sumWindow(rangeStart, rangeEnd);
+  const previous = sumWindow(prevStart, rangeStart);
+  const growthPct = (cur: number, prev: number) =>
+    prev > 0 ? Math.round(((cur - prev) / prev) * 1000) / 10 : cur > 0 ? 100 : 0;
+
+  return {
+    period,
+    series,
+    totals: {
+      new_count: current.new_count,
+      revenue: current.revenue,
+      prev_new_count: previous.new_count,
+      prev_revenue: previous.revenue,
+      new_growth_pct: growthPct(current.new_count, previous.new_count),
+      revenue_growth_pct: growthPct(current.revenue, previous.revenue),
+    },
+  };
+}

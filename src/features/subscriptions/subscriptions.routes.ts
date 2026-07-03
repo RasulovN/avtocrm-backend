@@ -15,6 +15,8 @@ import {
   patchSubscription,
   changeSubscriptionPlan,
   setSubscriptionFiscal,
+  getSubscriptionStats,
+  type StatsPeriod,
 } from './subscriptions.service.js';
 import { getLimitsAndUsage } from './planLimits.js';
 
@@ -82,6 +84,19 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
         page,
       );
       return paginate(req, results, count, page);
+    },
+  );
+
+  // GET /stats/ — super admin: obunalar statistikasi (haftalik/oylik/yillik).
+  // Dashboard chartlari uchun vaqt qatori + o'sish foizlari.
+  app.get(
+    '/stats/',
+    { onRequest: app.requirePermission('platform.subscriptions.view') },
+    async (req) => {
+      const q = req.query as { period?: string };
+      const period: StatsPeriod =
+        q.period === 'week' || q.period === 'year' ? q.period : 'month';
+      return getSubscriptionStats(period);
     },
   );
 
