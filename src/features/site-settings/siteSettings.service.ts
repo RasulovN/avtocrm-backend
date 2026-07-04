@@ -14,9 +14,9 @@ export const DEFAULT_LANDING: ContactInfo = {
   address: 'Toshkent · sotuv ofisi',
   location: null,
   socials: [
-    { name: 'Telegram', url: 'https://t.me/zumex' },
-    { name: 'Instagram', url: 'https://instagram.com/zumex' },
-    { name: 'Facebook', url: 'https://facebook.com/zumex' },
+    { name: 'Telegram', url: 'https://t.me/zumex', icon: 'telegram' },
+    { name: 'Instagram', url: 'https://instagram.com/zumex', icon: 'instagram' },
+    { name: 'Facebook', url: 'https://facebook.com/zumex', icon: 'facebook' },
   ],
 };
 

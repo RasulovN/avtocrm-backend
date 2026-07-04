@@ -4,6 +4,9 @@
 export interface SocialLink {
   name: string;
   url: string;
+  // Ixtiyoriy icon kaliti (telegram, instagram, ...) — landing shu bo'yicha
+  // SVG tanlaydi. Bo'lmasa nomdan taxmin qilinadi (eski ma'lumotlar uchun).
+  icon?: string;
 }
 
 export interface ContactInfo {
@@ -22,7 +25,15 @@ function str(v: unknown): string {
 function normSocials(raw: unknown): SocialLink[] {
   if (Array.isArray(raw)) {
     return raw
-      .map((s) => ({ name: str((s as SocialLink)?.name).trim(), url: str((s as SocialLink)?.url).trim() }))
+      .map((s) => {
+        const link: SocialLink = {
+          name: str((s as SocialLink)?.name).trim(),
+          url: str((s as SocialLink)?.url).trim(),
+        };
+        const icon = str((s as SocialLink)?.icon).trim().toLowerCase().slice(0, 30);
+        if (icon) link.icon = icon;
+        return link;
+      })
       .filter((s) => s.name && s.url);
   }
   // Eski format: { telegram: 'url', instagram: 'url', ... } -> massivga.

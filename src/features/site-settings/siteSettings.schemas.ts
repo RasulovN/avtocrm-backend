@@ -12,7 +12,13 @@ export const contactInfoSchema = z
       .nullable()
       .optional(),
     socials: z
-      .array(z.object({ name: z.string().min(1).max(60), url: z.string().max(300) }))
+      .array(
+        z.object({
+          name: z.string().min(1).max(60),
+          url: z.string().max(300),
+          icon: z.string().max(30).optional(),
+        }),
+      )
       .optional(),
   })
   .passthrough();
