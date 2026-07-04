@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { env, isDev } from './config/env.js';
 import { authPlugin } from './plugins/auth.js';
 import { auditPlugin } from './plugins/audit.js';
+import { usagePlugin } from './plugins/usage.js';
 import { errorHandler } from './plugins/errorHandler.js';
 import { registerRoutes } from './features/index.js';
 import { paymeWebhookRoutes } from './features/payments/payments.routes.js';
@@ -109,6 +110,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(errorHandler);
   await app.register(authPlugin);
   await app.register(auditPlugin);
+  await app.register(usagePlugin);
 
   // Barcha modul route'lari /api ostida
   await app.register(registerRoutes, { prefix: '/api' });

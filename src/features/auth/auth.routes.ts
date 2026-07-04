@@ -9,6 +9,7 @@ import { sendMail } from '../../common/email.js';
 import { makeToken, checkToken, encodeUid, decodeUid } from '../../common/passwordReset.js';
 import { BadRequest, Unauthorized, ValidationError } from '../../common/errors.js';
 import { recordAudit } from '../../common/audit.js';
+import { trackUsage } from '../../common/usageTracker.js';
 import { env } from '../../config/env.js';
 import {
   registerSchema,
@@ -188,6 +189,9 @@ export async function authRoutes(app: FastifyInstance) {
       userAgent: meta.userAgent,
       meta: { platform: meta.platform },
     });
+
+    // Foydalanish statistikasi: kirish hodisasi (faqat kompaniya foydalanuvchilari).
+    if (user.companyId) trackUsage(user.companyId, user.id, { logins: 1, requests: 1 });
 
     return reply.send({
       success: true,

@@ -81,6 +81,7 @@ model Company {
   notifications           Notification[]
   announcements           Announcement[]
   auditLogs               AuditLog[]
+  usageDaily              UsageDaily[]
 
   @@index([categoryId])
   @@index([status])
@@ -427,6 +428,7 @@ model User {
   auditLogs            AuditLog[]
   supportConversation  SupportConversation?
   supportMessages      SupportMessage[]
+  usageDaily           UsageDaily[]
 
   @@index([phoneNumber])
   @@index([email])
@@ -1135,6 +1137,31 @@ model AuditLog {
   @@index([entity])
   @@index([archivedAt])
   @@map("audit_log")
+}
+
+// ───────── Foydalanish statistikasi (kunlik rollup) ─────────
+// Har bir (kompaniya, foydalanuvchi, kun) uchun bitta qator: so'rovlar,
+// kirishlar va yozuv amallari soni. Super admin "Foydalanish tahlili" paneli
+// shu jadvaldan o'qiydi — audit_log'ni har safar skan qilishdan ancha yengil.
+// Yozuv: plugins/usage.ts xotirada yig'ib, davriy ravishda upsert qiladi.
+model UsageDaily {
+  id        Int     @id @default(autoincrement())
+  companyId Int     @map("company_id")
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId    Int     @map("user_id")
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Asia/Tashkent (UTC+5) bo'yicha kun
+  date      DateTime @db.Date
+  // Barcha autentifikatsiyalangan so'rovlar (o'qish ham) — umumiy faollik o'lchovi
+  requests  Int      @default(0)
+  logins    Int      @default(0)
+  // Yozuv amallari (create/update/delete)
+  actions   Int      @default(0)
+
+  @@unique([companyId, userId, date])
+  @@index([date])
+  @@index([userId, date])
+  @@map("usage_daily")
 }
 
 // ───────── Landing: demo so'rovlar (zayavkalar) ─────────
