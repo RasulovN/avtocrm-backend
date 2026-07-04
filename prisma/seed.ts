@@ -1,8 +1,31 @@
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { syncPermissions, provisionPlatformAdminRole, regrantSystemRoles } from '../src/features/rbac/rbac.service.js';
 
 const prisma = new PrismaClient();
+
+// ───── Boshlang'ich super admin ma'lumotlari — .env dan ─────
+// SEED_ADMIN_EMAIL / SEED_ADMIN_PHONE / SEED_ADMIN_PASSWORD / SEED_ADMIN_NAME.
+// Development'da berilmasa default qiymatlar ishlatiladi; production'da parol
+// MAJBURIY — default parol bilan prod bazaga seed qilishga yo'l qo'ymaymiz.
+const IS_PROD = process.env.NODE_ENV === 'production';
+const DEV_DEFAULT_PASSWORD = 'admin12345';
+
+const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL ?? 'admin@autocrm.local';
+const ADMIN_PHONE = process.env.SEED_ADMIN_PHONE ?? '+998901234567';
+const ADMIN_NAME = process.env.SEED_ADMIN_NAME ?? 'Super Administrator';
+const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD ?? (IS_PROD ? '' : DEV_DEFAULT_PASSWORD);
+
+if (!ADMIN_PASSWORD) {
+  throw new Error(
+    'SEED_ADMIN_PASSWORD .env da berilishi shart (production). ' +
+      'Kamida 8 belgili kuchli parol kiriting.',
+  );
+}
+if (IS_PROD && ADMIN_PASSWORD.length < 8) {
+  throw new Error('SEED_ADMIN_PASSWORD juda qisqa — kamida 8 belgi bo\'lsin.');
+}
 
 async function main() {
   // 1) Ruxsatlar katalogini DB ga sinxronlash
@@ -18,15 +41,25 @@ async function main() {
   await regrantSystemRoles(prisma);
   console.log('✓ System roles re-granted (granular CRUD)');
 
-  // 3) Super admin foydalanuvchi
-  const password = await bcrypt.hash('admin12345', 10);
+  // 3) Super admin foydalanuvchi (.env: SEED_ADMIN_*)
+  const password = await bcrypt.hash(ADMIN_PASSWORD, 10);
+  // Parol .env da ANIQ berilgan bo'lsa, qayta seed'da ham yangilanadi —
+  // shunda parolni .env orqali almashtirish mumkin. Berilmagan bo'lsa
+  // (dev default), mavjud admin paroli tegilmaydi.
+  const passwordUpdate = process.env.SEED_ADMIN_PASSWORD ? { password } : {};
   const admin = await prisma.user.upsert({
-    where: { email: 'admin@autocrm.local' },
-    update: { roleId: platformRoleId, isSuperuser: true, isStaff: true, isEmailVerified: true },
+    where: { email: ADMIN_EMAIL },
+    update: {
+      roleId: platformRoleId,
+      isSuperuser: true,
+      isStaff: true,
+      isEmailVerified: true,
+      ...passwordUpdate,
+    },
     create: {
-      fullName: 'Super Administrator',
-      phoneNumber: '+998901234567',
-      email: 'admin@autocrm.local',
+      fullName: ADMIN_NAME,
+      phoneNumber: ADMIN_PHONE,
+      email: ADMIN_EMAIL,
       password,
       isActive: true,
       isStaff: true,
@@ -35,7 +68,7 @@ async function main() {
       roleId: platformRoleId,
     },
   });
-  console.log('✓ Super admin:', admin.email, '/ parol: admin12345');
+  console.log('✓ Super admin:', admin.email);
 
   // 4) Demo tariflar (obuna rejalari)
   const plans = [
@@ -67,7 +100,10 @@ async function main() {
   }
   console.log('✓ Demo company categories');
 
-  console.log('\nSeed tugadi. Super admin: admin@autocrm.local yoki +998901234567 / admin12345');
+  const passwordNote = process.env.SEED_ADMIN_PASSWORD
+    ? '(parol .env dagi SEED_ADMIN_PASSWORD)'
+    : `/ parol: ${DEV_DEFAULT_PASSWORD} (dev default — .env da SEED_ADMIN_PASSWORD bilan o'zgartiring)`;
+  console.log(`\nSeed tugadi. Super admin: ${ADMIN_EMAIL} yoki ${ADMIN_PHONE} ${passwordNote}`);
 }
 
 main()
