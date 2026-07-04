@@ -11,7 +11,7 @@ export const DEFAULT_LANDING: ContactInfo = {
   phone: '+998 (00) 000-00-00',
   phoneHref: '+998000000000',
   email: 'sales@zumex.uz',
-  address: 'Toshkent · sotuv ofisi',
+  address: 'Qarshi · sotuv ofisi',
   location: null,
   socials: [
     { name: 'Telegram', url: 'https://t.me/zumex', icon: 'telegram' },
