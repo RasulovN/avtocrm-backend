@@ -7,6 +7,7 @@ import { prisma } from '../../db/prisma.js';
 import { env } from '../../config/env.js';
 import { BadRequest } from '../../common/errors.js';
 import { PaymeState } from './payme.types.js';
+import { buildPaymeAccount } from './payme.service.js';
 import { computeActivationWindow } from '../subscriptions/subscription.window.js';
 import { buildFiscalDetail, type PaymeReceiptDetail } from './payme.fiscal.js';
 
@@ -72,7 +73,16 @@ async function rpc<T = unknown>(method: string, params: unknown, useKey: boolean
 
   if (json?.error) {
     const m = json.error.message;
-    const text = typeof m === 'string' ? m : m?.uz || m?.ru || m?.en || 'Payme xatosi';
+    let text = (typeof m === 'string' ? m : m?.uz || m?.ru || m?.en || '').trim();
+    // Payme -31610 ni ko'pincha BO'SH xabar bilan qaytaradi; data'da yetishmayotgan
+    // account maydoni nomi keladi (masalan "subscription_id").
+    if (!text) {
+      const field = typeof json.error.data === 'string' && json.error.data ? ` ("${json.error.data}" maydoni)` : '';
+      text =
+        json.error.code === -31610
+          ? `Payme kassa account ma'lumotini rad etdi${field}. Kassa sxemasi o'zgargan bo'lishi mumkin — PAYME_ACCOUNT_FIELDS sozlamasini tekshiring.`
+          : `Payme xatosi (kod ${json.error.code ?? 'noma\'lum'})`;
+    }
     throw new SubscribeError(json.error.code ?? -1, text, json.error.data);
   }
   return json.result as T;
@@ -140,7 +150,9 @@ export async function payForSubscription(companyId: number, subscriptionId: numb
     throw new BadRequest({ detail: "Obuna allaqachon faollashtirilgan yoki to'lov jarayonida." });
   }
 
-  const account = { [env.PAYME_ACCOUNT_FIELD]: String(subscription.id) };
+  // Kassadagi barcha majburiy account maydonlari (order_id + subscription_id) —
+  // bittasi yetishmasa Payme receipts.create -31610 qaytaradi.
+  const account = buildPaymeAccount(subscription.id);
   // Fiskalizatsiya (MXIK) — chek soliqqa fiskallashtiriladi.
   const detail = buildFiscalDetail(subscription, amountTiyin);
 

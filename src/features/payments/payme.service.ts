@@ -60,19 +60,25 @@ const MSG_TRANSACTION_NOT_FOUND = msg(
 // ─────────────────────────────────────────────
 // Checkout link (so'rovnoma havolasi)
 // ─────────────────────────────────────────────
+// Kassa account sxemasidagi BARCHA majburiy maydonlarga bir xil obuna ID.
+// Bitta maydon yetishmasa Payme -31610 (bo'sh xabar bilan) qaytaradi.
+export function buildPaymeAccount(subscriptionId: number | string): Record<string, string> {
+  return Object.fromEntries(env.PAYME_ACCOUNT_FIELDS.map((f) => [f, String(subscriptionId)]));
+}
+
 // Format: ${PAYME_CHECKOUT_URL}/${base64("m=MERCHANT;ac.FIELD=subId;a=amountTiyin")}
 export function buildCheckoutLink(subscription: Pick<Subscription, 'id' | 'amount'>): {
   checkout_url: string;
   amount_tiyin: number;
 } {
   const amountTiyin = somToTiyin(subscription.amount as Prisma.Decimal);
-  const field = env.PAYME_ACCOUNT_FIELD;
   // Payme GET checkout: base64("m=...;ac.<field>=<id>;a=<tiyin>[;c=<callback>];cr=860;l=uz")
   // cr=860 -> UZS, l=uz -> til. c (callback) faqat PUBLIC https domen bo'lsa qo'shiladi:
   // Payme checkout localhost/http callback'ni rad etib, sahifani ochmasligi mumkin.
   const fe = env.FRONTEND_URL.replace(/\/+$/, '');
   const isPublicHttps = /^https:\/\//i.test(fe) && !/(localhost|127\.0\.0\.1|0\.0\.0\.0)/i.test(fe);
-  const parts = [`m=${env.PAYME_MERCHANT_ID}`, `ac.${field}=${subscription.id}`, `a=${amountTiyin}`];
+  const acParts = env.PAYME_ACCOUNT_FIELDS.map((f) => `ac.${f}=${subscription.id}`);
+  const parts = [`m=${env.PAYME_MERCHANT_ID}`, ...acParts, `a=${amountTiyin}`];
   if (isPublicHttps) parts.push(`c=${fe}/uz/subscription`);
   parts.push('cr=860', 'l=uz');
   const encoded = Buffer.from(parts.join(';'), 'utf8').toString('base64');
@@ -117,8 +123,11 @@ async function assertCanPerform(params: PaymeParams, excludePaycomId?: string) {
   const field = env.PAYME_ACCOUNT_FIELD;
   const subscription = await findSubscriptionOrThrow(params);
 
-  // Bloklangan: obuna pending emas (allaqachon active/expired/cancelled).
-  if (subscription.status !== 'pending') {
+  // Bloklangan: obuna to'lanadigan holatda emas (allaqachon active/expired/cancelled).
+  // 'processing' ham ruxsat: bu holatni bizning /payments/pay o'zi qo'yadi (double-charge
+  // qulfi) — Payme receipts.create/pay paytida webhookka CheckPerform/CreateTransaction
+  // yuboradi va o'sha so'rovlar o'tishi shart, aks holda karta to'lovi doim -31051 bo'ladi.
+  if (subscription.status !== 'pending' && subscription.status !== 'processing') {
     throw new PaymeRpcException(PaymeError.AccountBlocked, MSG_ACCOUNT_BLOCKED, field);
   }
 

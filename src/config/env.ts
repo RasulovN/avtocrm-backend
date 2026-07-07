@@ -78,6 +78,22 @@ const PAYME_ALLOWED_IPS = (process.env.PAYME_ALLOWED_IPS ?? '')
   .map((s) => s.trim())
   .filter(Boolean);
 
+// Payme account field nomi (webhook shu maydondan obuna ID o'qiydi).
+const PAYME_ACCOUNT_FIELD = process.env.PAYME_ACCOUNT_FIELD ?? 'subscription_id';
+// Kassa `account` sxemasidagi BARCHA majburiy maydonlar. Payme kassaga fiskalizatsiya
+// qo'shganda ikkinchi majburiy maydon paydo bo'ldi (order_id + subscription_id) —
+// bittasi yetishmasa receipts.create/checkout -31610 qaytaradi. Hammasiga bir xil
+// obuna ID yuboriladi; webhook faqat PAYME_ACCOUNT_FIELD ni o'qiyveradi.
+const PAYME_ACCOUNT_FIELDS = Array.from(
+  new Set(
+    (process.env.PAYME_ACCOUNT_FIELDS ?? 'order_id,subscription_id')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .concat(PAYME_ACCOUNT_FIELD),
+  ),
+);
+
 export const env = {
   NODE_ENV,
   PORT: Number(process.env.PORT ?? 8000),
@@ -106,8 +122,10 @@ export const env = {
   PAYME_SUBSCRIBE_MERCHANT_ID, // Subscribe API kassa id (default: PAYME_MERCHANT_ID)
   PAYME_SUBSCRIBE_KEY, // Subscribe API kassa kaliti (default: PAYME_ACTIVE_KEY)
   PAYME_ALLOWED_IPS, // ruxsat etilgan IP/CIDR ro'yxati (bo'sh = barchasi)
-  // Payme account field nomi (checkout link uchun) — bizda subscription id
-  PAYME_ACCOUNT_FIELD: process.env.PAYME_ACCOUNT_FIELD ?? 'subscription_id',
+  // Payme account field nomi (webhook o'qiydigan asosiy maydon) — bizda subscription id
+  PAYME_ACCOUNT_FIELD,
+  // Kassa talab qiladigan barcha account maydonlari (receipts.create/checkout uchun)
+  PAYME_ACCOUNT_FIELDS,
 
   // ===== Fiskalizatsiya (soliq cheki) =====
   // MXIK/ИКПУ — "dasturiy taʼminotdan foydalanish xizmatlari". QQS to'lamaymiz -> 0.
