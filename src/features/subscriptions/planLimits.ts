@@ -24,6 +24,7 @@ export interface LimitUsage {
 
 // Kompaniyaning FAOL obunasidagi tarif limitlarini qaytaradi.
 // Faol obuna: status='active' va endAt yo'q yoki kelajakda.
+// Moslashuvchan (custom) tarifda limitlar obunada tanlangan miqdorlardan olinadi.
 export async function getPlanLimits(companyId: number): Promise<PlanLimits> {
   const sub = await prisma.subscription.findFirst({
     where: {
@@ -32,12 +33,23 @@ export async function getPlanLimits(companyId: number): Promise<PlanLimits> {
       OR: [{ endAt: null }, { endAt: { gt: new Date() } }],
     },
     orderBy: { endAt: 'desc' },
-    include: { plan: { select: { id: true, name: true, maxStores: true, maxUsers: true } } },
+    include: {
+      plan: { select: { id: true, name: true, maxStores: true, maxUsers: true, isCustom: true } },
+    },
   });
   if (!sub?.plan) {
     // Faol obuna yo'q — do'kon/foydalanuvchi qo'shib bo'lmaydi (obuna gating baribir
     // bloklaydi, lekin bu yerda ham 0 limit bilan xavfsiz tomonga qaramiz).
     return { maxStores: 0, maxUsers: 0, planId: null, planName: null };
+  }
+  // Custom tarif: kompaniya to'lagan miqdorlar — effektiv limit.
+  if (sub.plan.isCustom && sub.customStores != null && sub.customUsers != null) {
+    return {
+      maxStores: sub.customStores,
+      maxUsers: sub.customUsers,
+      planId: sub.plan.id,
+      planName: sub.plan.name,
+    };
   }
   return {
     maxStores: sub.plan.maxStores,

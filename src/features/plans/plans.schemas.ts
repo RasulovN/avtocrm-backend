@@ -17,6 +17,11 @@ export const planCreateSchema = z.object({
   description_en: z.string().nullish(),
   description_uz_cyrl: z.string().nullish(),
   price: decimalInput,
+  // Moslashuvchan tarif: oylik = base_price + do'kon*price_per_store + user*price_per_user
+  is_custom: z.boolean().optional(),
+  base_price: decimalInput.optional(),
+  price_per_store: decimalInput.optional(),
+  price_per_user: decimalInput.optional(),
   duration_days: z.number().int().positive(),
   // Uzoq muddat chegirmalari (%) — ixtiyoriy, default 0.
   discount_3: discountPercent.optional(),
@@ -40,6 +45,10 @@ export const planUpdateSchema = z.object({
   description_en: z.string().nullish(),
   description_uz_cyrl: z.string().nullish(),
   price: decimalInput.optional(),
+  is_custom: z.boolean().optional(),
+  base_price: decimalInput.optional(),
+  price_per_store: decimalInput.optional(),
+  price_per_user: decimalInput.optional(),
   duration_days: z.number().int().positive().optional(),
   discount_3: discountPercent.optional(),
   discount_6: discountPercent.optional(),

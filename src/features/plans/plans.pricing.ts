@@ -37,6 +37,30 @@ export function discountedAmount(price: Prisma.Decimal, months: number, pct: num
   return gross.mul(100 - pct).div(100).toDecimalPlaces(2);
 }
 
+// ── Moslashuvchan (custom) tarif ─────────────────────────
+// Oylik narx = basePrice + do'konlar * pricePerStore + foydalanuvchilar * pricePerUser.
+// Miqdorlarni kompaniya obuna bo'lishda tanlaydi (plan.max* — yuqori chegara).
+export interface CustomLimits {
+  stores: number;
+  users: number;
+}
+
+interface CustomPricingPlan {
+  basePrice: Prisma.Decimal;
+  pricePerStore: Prisma.Decimal;
+  pricePerUser: Prisma.Decimal;
+}
+
+export function computeCustomMonthlyPrice(
+  plan: CustomPricingPlan,
+  limits: CustomLimits,
+): Prisma.Decimal {
+  return plan.basePrice
+    .plus(plan.pricePerStore.mul(limits.stores))
+    .plus(plan.pricePerUser.mul(limits.users))
+    .toDecimalPlaces(2);
+}
+
 // Frontend uchun har bir muddat bo'yicha narx varianti.
 export interface PricingOption {
   months: number;

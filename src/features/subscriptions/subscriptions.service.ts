@@ -9,7 +9,12 @@ import { env } from '../../config/env.js';
 import { pushNotifications } from '../notifications/notification.service.js';
 import { computeActivationWindow } from './subscription.window.js';
 import { ALLOWED_MONTHS } from './subscriptions.schemas.js';
-import { discountForMonths, discountedAmount } from '../plans/plans.pricing.js';
+import {
+  discountForMonths,
+  discountedAmount,
+  computeCustomMonthlyPrice,
+  type CustomLimits,
+} from '../plans/plans.pricing.js';
 
 // ─────────────────────────────────────────────
 // Obuna holati o'zgarganda kompaniyaga bildirishnoma (tizim) + email.
@@ -144,6 +149,9 @@ export function serializeSubscription(s: SubscriptionWithRelations) {
     status: s.status,
     amount: decimalToString(s.amount),
     period_months: s.periodMonths,
+    // Moslashuvchan tarifda tanlangan miqdorlar (oddiy tarifda null)
+    custom_stores: s.customStores ?? null,
+    custom_users: s.customUsers ?? null,
     start_at: s.startAt,
     end_at: s.endAt,
     created_at: s.createdAt,
@@ -172,13 +180,67 @@ function isActiveSub(s: { status: string; endAt: Date | null }): boolean {
 // ─────────────────────────────────────────────
 // POST / — kompaniya obuna yaratadi + Payme checkout havolasi.
 // ─────────────────────────────────────────────
-export async function createSubscription(companyId: number, planId: number, months = 1) {
+export async function createSubscription(
+  companyId: number,
+  planId: number,
+  months = 1,
+  customLimits?: CustomLimits,
+) {
   const plan = await prisma.plan.findUnique({ where: { id: planId } });
   if (!plan || !plan.isActive) {
     throw new BadRequest({ detail: 'Tanlangan tarif topilmadi yoki faol emas.' });
   }
 
-  const isFree = plan.price.lessThanOrEqualTo(0);
+  // ── MOSLASHUVCHAN (custom) TARIF ──
+  // Kompaniya do'kon/foydalanuvchi sonini o'zi tanlaydi; oylik narx dinamik:
+  //   basePrice + stores*pricePerStore + users*pricePerUser.
+  // Tanlangan miqdor joriy foydalanishdan kam va plan.max* (cap) dan ko'p bo'lmasin.
+  let limits: CustomLimits | null = null;
+  let monthlyPrice = plan.price;
+  if (plan.isCustom) {
+    if (!customLimits) {
+      throw new BadRequest({
+        detail: "Moslashuvchan tarif uchun do'kon va foydalanuvchi sonini tanlang.",
+        code: 'custom_limits_required',
+      });
+    }
+    const [storeCount, userCount] = await Promise.all([
+      prisma.store.count({ where: { companyId } }),
+      prisma.user.count({ where: { companyId } }),
+    ]);
+    if (customLimits.stores < storeCount) {
+      throw new BadRequest({
+        detail: `Sizda hozir ${storeCount} ta do'kon mavjud — kamida shuncha tanlang.`,
+        code: 'custom_stores_below_usage',
+        used: storeCount,
+      });
+    }
+    if (customLimits.users < userCount) {
+      throw new BadRequest({
+        detail: `Sizda hozir ${userCount} ta foydalanuvchi mavjud — kamida shuncha tanlang.`,
+        code: 'custom_users_below_usage',
+        used: userCount,
+      });
+    }
+    if (plan.maxStores != null && customLimits.stores > plan.maxStores) {
+      throw new BadRequest({
+        detail: `Bu tarifda ko'pi bilan ${plan.maxStores} ta do'kon tanlash mumkin.`,
+        code: 'custom_stores_above_cap',
+        limit: plan.maxStores,
+      });
+    }
+    if (plan.maxUsers != null && customLimits.users > plan.maxUsers) {
+      throw new BadRequest({
+        detail: `Bu tarifda ko'pi bilan ${plan.maxUsers} ta foydalanuvchi tanlash mumkin.`,
+        code: 'custom_users_above_cap',
+        limit: plan.maxUsers,
+      });
+    }
+    limits = customLimits;
+    monthlyPrice = computeCustomMonthlyPrice(plan, limits);
+  }
+
+  const isFree = monthlyPrice.lessThanOrEqualTo(0);
 
   // Oylar sonini normallashtiramiz: bepul tarif har doim 1 oy, pullik — 1/3/6/12.
   const periodMonths = isFree
@@ -212,16 +274,23 @@ export async function createSubscription(companyId: number, planId: number, mont
     }
   }
 
-  // Jami summa = tarif narxi * oylar soni * (1 - uzoq muddat chegirmasi).
-  // Chegirma faqat pullik tarifda va muddat > 1 oy bo'lganda qo'llanadi.
+  // Jami summa = oylik narx * oylar soni * (1 - uzoq muddat chegirmasi).
+  // Moslashuvchan tarifda oylik narx tanlangan miqdorlardan hisoblangan.
   const discountPercent = isFree ? 0 : discountForMonths(plan, periodMonths);
   const amount = isFree
-    ? plan.price
-    : discountedAmount(plan.price, periodMonths, discountPercent);
+    ? monthlyPrice
+    : discountedAmount(monthlyPrice, periodMonths, discountPercent);
 
   // Mavjud to'lanmagan (pending) bir xil so'rovni qayta ishlatamiz — dublikatlar oldini olish.
   const existingPending = await prisma.subscription.findFirst({
-    where: { companyId, planId: plan.id, status: 'pending', amount },
+    where: {
+      companyId,
+      planId: plan.id,
+      status: 'pending',
+      amount,
+      customStores: limits?.stores ?? null,
+      customUsers: limits?.users ?? null,
+    },
     include: { plan: true },
     orderBy: { createdAt: 'desc' },
   });
@@ -235,6 +304,8 @@ export async function createSubscription(companyId: number, planId: number, mont
         status: 'pending',
         amount,
         periodMonths,
+        customStores: limits?.stores ?? null,
+        customUsers: limits?.users ?? null,
         startAt: null,
         endAt: null,
       },
@@ -484,7 +555,25 @@ export async function changeSubscriptionPlan(id: number, planId: number, months?
     throw new BadRequest({ detail: 'Tanlangan tarif topilmadi yoki faol emas.' });
   }
 
-  const isFree = plan.price.lessThanOrEqualTo(0);
+  // Moslashuvchan tarifga qo'lda o'tkazish faqat obunada tanlangan miqdorlar
+  // saqlangan bo'lsa mumkin (shu miqdorlar bo'yicha qayta hisoblanadi). Aks holda
+  // kompaniya obuna sahifasidan miqdorlarni tanlab o'zi obuna bo'lishi kerak.
+  let monthlyPrice = plan.price;
+  if (plan.isCustom) {
+    if (subscription.customStores == null || subscription.customUsers == null) {
+      throw new BadRequest({
+        detail:
+          "Moslashuvchan tarifga o'tkazish uchun kompaniya obuna sahifasidan do'kon/foydalanuvchi sonini tanlab o'zi obuna bo'lishi kerak.",
+        code: 'custom_limits_required',
+      });
+    }
+    monthlyPrice = computeCustomMonthlyPrice(plan, {
+      stores: subscription.customStores,
+      users: subscription.customUsers,
+    });
+  }
+
+  const isFree = monthlyPrice.lessThanOrEqualTo(0);
   const periodMonths = isFree
     ? 1
     : (ALLOWED_MONTHS as readonly number[]).includes(months ?? subscription.periodMonths)
@@ -492,7 +581,7 @@ export async function changeSubscriptionPlan(id: number, planId: number, months?
       : 1;
 
   const discountPercent = isFree ? 0 : discountForMonths(plan, periodMonths);
-  const amount = isFree ? plan.price : discountedAmount(plan.price, periodMonths, discountPercent);
+  const amount = isFree ? monthlyPrice : discountedAmount(monthlyPrice, periodMonths, discountPercent);
 
   // Faol obuna — muddatni yangi tarif bo'yicha qayta hisoblaymiz (startAt saqlanadi).
   const active = isActiveSub(subscription);

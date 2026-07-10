@@ -229,6 +229,13 @@ model Plan {
   descriptionEn     String?  @map("description_en")
   descriptionUzCyrl String?  @map("description_uz_cyrl")
   price             Decimal  @db.Decimal(15, 2)
+  // Moslashuvchan (custom) tarif — narx miqdorga qarab dinamik hisoblanadi:
+  //   oylik = basePrice + do'konlar * pricePerStore + foydalanuvchilar * pricePerUser
+  // maxStores/maxUsers custom tarifda YUQORI chegara (cap) vazifasini bajaradi.
+  isCustom          Boolean  @default(false) @map("is_custom")
+  basePrice         Decimal  @default(0) @map("base_price") @db.Decimal(15, 2)
+  pricePerStore     Decimal  @default(0) @map("price_per_store") @db.Decimal(15, 2)
+  pricePerUser      Decimal  @default(0) @map("price_per_user") @db.Decimal(15, 2)
   durationDays      Int      @map("duration_days") // obuna muddati (kun)
   // Uzoq muddatga oldindan to'lovda chegirma foizi (0-90). 1 oy uchun chegirma yo'q.
   // Summa = price * oylar * (1 - chegirma/100).
@@ -260,6 +267,10 @@ model Subscription {
   // Oldindan to'langan oylar soni (1 | 3 | 6 | 12). Faollashtirishda muddat =
   // plan.durationDays * periodMonths kun. Bepul tarif uchun har doim 1.
   periodMonths Int    @default(1) @map("period_months")
+  // Moslashuvchan (custom) tarifda kompaniya tanlagan miqdorlar snapshot'i —
+  // limitlar shu qiymatlardan olinadi (plan.max* emas).
+  customStores Int?   @map("custom_stores")
+  customUsers  Int?   @map("custom_users")
   startAt   DateTime? @map("start_at")
   endAt     DateTime? @map("end_at")
   createdAt DateTime  @default(now()) @map("created_at")
@@ -1214,4 +1225,58 @@ model SiteSetting {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("site_setting")
+}
+
+// ───────── Sayt analitikasi: landing tashriflari ─────────
+// Landing sahifadan anonim tashrif yoziladi (POST /api/site-analytics/visit/).
+// Bitta brauzer sessiyasi = bitta qator (session_id unique — dedup atomik).
+// duration_seconds heartbeat orqali server tomonda hisoblanadi (mijozga ishonilmaydi).
+model SiteVisit {
+  id              Int      @id @default(autoincrement())
+  // localStorage'da 365 kun saqlanadigan ID — qaytgan tashrifchini aniqlaydi
+  visitorId       String   @map("visitor_id") @db.VarChar(64)
+  sessionId       String   @unique @map("session_id") @db.VarChar(64)
+  ip              String   @db.VarChar(45)
+  country         String?  @db.VarChar(80)
+  region          String?  @db.VarChar(120)
+  city            String?  @db.VarChar(120)
+  // desktop | mobile | tablet
+  deviceType      String   @map("device_type") @db.VarChar(16)
+  os              String?  @db.VarChar(40)
+  browser         String?  @db.VarChar(40)
+  referrer        String?  @db.VarChar(512)
+  referrerHost    String?  @map("referrer_host") @db.VarChar(190)
+  utmSource       String?  @map("utm_source") @db.VarChar(120)
+  utmMedium       String?  @map("utm_medium") @db.VarChar(120)
+  utmCampaign     String?  @map("utm_campaign") @db.VarChar(120)
+  path            String   @db.VarChar(255)
+  locale          String?  @db.VarChar(8)
+  screenWidth     Int?     @map("screen_width")
+  screenHeight    Int?     @map("screen_height")
+  isNewVisitor    Boolean  @default(false) @map("is_new_visitor")
+  durationSeconds Int      @default(0) @map("duration_seconds")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([visitorId])
+  @@index([country])
+  @@map("site_visit")
+}
+
+// ───────── Storage analytics: soatlik snapshot (o'sish grafigi manbai) ─────────
+// Har soatda DB hajmi + media papka hajmi yozib boriladi; super admin
+// "Storage Analytics" sahifasi o'sish dinamikasini shundan chizadi.
+model StorageSnapshot {
+  id                Int      @id @default(autoincrement())
+  databaseSizeBytes BigInt   @map("database_size_bytes")
+  mediaSizeBytes    BigInt   @default(0) @map("media_size_bytes")
+  mediaFileCount    Int      @default(0) @map("media_file_count")
+  totalRows         BigInt   @map("total_rows")
+  totalTables       Int      @map("total_tables")
+  // [{ table, total_bytes, rows }] — eng katta jadvallar kesimi
+  tableStorage      Json     @default("[]") @map("table_storage")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("storage_snapshot")
 }

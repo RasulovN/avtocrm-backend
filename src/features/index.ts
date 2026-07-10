@@ -28,6 +28,8 @@ import { inventoryRoutes } from './inventory/inventory.routes.js';
 import { leadsRoutes } from './leads/leads.routes.js';
 import { siteSettingsRoutes } from './site-settings/siteSettings.routes.js';
 import { usageRoutes } from './usage/usage.routes.js';
+import { siteAnalyticsRoutes } from './site-analytics/siteAnalytics.routes.js';
+import { storageAnalyticsRoutes } from './storage-analytics/storageAnalytics.routes.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // SaaS platform
@@ -47,6 +49,8 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(leadsRoutes, { prefix: '/leads' });
   await app.register(siteSettingsRoutes, { prefix: '/site-settings' });
   await app.register(usageRoutes, { prefix: '/usage' });
+  await app.register(siteAnalyticsRoutes, { prefix: '/site-analytics' });
+  await app.register(storageAnalyticsRoutes, { prefix: '/storage-analytics' });
 
   // CRM (tenant ma'lumotlari)
   await app.register(usersRoutes, { prefix: '/users' });

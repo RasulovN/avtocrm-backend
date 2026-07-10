@@ -26,6 +26,11 @@ export function serializePlan(p: Plan, lang: Lang = 'uz') {
     description_en: p.descriptionEn,
     description_uz_cyrl: p.descriptionUzCyrl,
     price: decimalToString(p.price),
+    // Moslashuvchan tarif maydonlari
+    is_custom: p.isCustom,
+    base_price: decimalToString(p.basePrice),
+    price_per_store: decimalToString(p.pricePerStore),
+    price_per_user: decimalToString(p.pricePerUser),
     duration_days: p.durationDays,
     // Uzoq muddat chegirmalari (%)
     discount_3: p.discountM3,
@@ -78,6 +83,10 @@ export async function createPlan(data: PlanCreateInput, lang: Lang = 'uz') {
       descriptionEn: data.description_en ?? null,
       descriptionUzCyrl: data.description_uz_cyrl ?? null,
       price: data.price,
+      isCustom: data.is_custom ?? false,
+      basePrice: data.base_price ?? '0',
+      pricePerStore: data.price_per_store ?? '0',
+      pricePerUser: data.price_per_user ?? '0',
       durationDays: data.duration_days,
       discountM3: data.discount_3 ?? 0,
       discountM6: data.discount_6 ?? 0,
@@ -107,6 +116,10 @@ export async function updatePlan(id: number, data: PlanUpdateInput, lang: Lang =
       descriptionUzCyrl:
         data.description_uz_cyrl === undefined ? undefined : data.description_uz_cyrl ?? null,
       price: data.price,
+      isCustom: data.is_custom,
+      basePrice: data.base_price,
+      pricePerStore: data.price_per_store,
+      pricePerUser: data.price_per_user,
       durationDays: data.duration_days,
       discountM3: data.discount_3,
       discountM6: data.discount_6,

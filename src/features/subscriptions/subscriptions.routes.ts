@@ -31,7 +31,12 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const body = subscriptionCreateSchema.parse(req.body);
-      const result = await createSubscription(req.companyId!, body.plan_id, body.months ?? 1);
+      const result = await createSubscription(
+        req.companyId!,
+        body.plan_id,
+        body.months ?? 1,
+        body.custom_limits,
+      );
       return reply.status(201).send(result);
     },
   );
