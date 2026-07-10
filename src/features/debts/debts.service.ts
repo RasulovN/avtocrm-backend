@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import type { CustomerDebt, Customer, Sale, Payment } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { NotFound, ValidationError } from '../../common/errors.js';
-import type { PayDebtInput } from './debts.schemas.js';
+import type { PayDebtBulkInput, PayDebtInput } from './debts.schemas.js';
 
 // ── Yordamchilar ──────────────────────────────────────────
 
@@ -95,6 +95,72 @@ async function getSaleDebt(
 //   - Payment yaratish (customer=sale.customer, amount, type=payment_type, sale)
 //   - CustomerDebt yaratish (type = DECREASE "d", sale, customer)
 //   - return payment
+// Karta kanali (method) berilgan bo'lsa faol PaymentMethod ekanini tekshiradi.
+// Naqd to'lovda kanal saqlanmaydi.
+async function resolveMethodId(
+  tx: Prisma.TransactionClient,
+  type: 'cash' | 'card',
+  method: number | null | undefined,
+): Promise<number | null> {
+  if (type !== 'card' || method == null) return null;
+  const pm = await tx.paymentMethod.findFirst({ where: { id: method, isActive: true } });
+  if (!pm) {
+    throw new ValidationError({ message: "Tanlangan to'lov turi mavjud emas yoki nofaol" });
+  }
+  return pm.id;
+}
+
+// Qarz to'lovi sale holatini ham yangilaydi: paid_amount oshadi, to'liq yopilsa
+// status 'paid', qisman bo'lsa 'partial'. (Mijoz modali va ro'yxatlar
+// total_amount - paid_amount dan qarzni hisoblaydi — sinxron bo'lishi shart.)
+async function applySalePayment(
+  tx: Prisma.TransactionClient,
+  params: {
+    companyId: number;
+    sale: Sale;
+    amount: Prisma.Decimal;
+    type: 'cash' | 'card';
+    methodId: number | null;
+  },
+): Promise<Payment> {
+  const { companyId, sale, amount, type, methodId } = params;
+
+  // 🔴 PAYMENT
+  const payment = await tx.payment.create({
+    data: {
+      companyId,
+      customerId: sale.customerId,
+      amount,
+      type,
+      methodId,
+      saleId: sale.id,
+    },
+  });
+
+  // 🔴 DEBT REDUCE (SALE BILAN) — type = DECREASE ("d")
+  await tx.customerDebt.create({
+    data: {
+      companyId,
+      customerId: sale.customerId!,
+      saleId: sale.id,
+      amount,
+      type: 'd',
+    },
+  });
+
+  // 🔴 SALE STATUS/PAID: qolgan qarzga qarab yangilanadi
+  const remainingDebt = await getSaleDebt(tx, sale.id);
+  await tx.sale.update({
+    where: { id: sale.id },
+    data: {
+      paidAmount: { increment: amount },
+      status: remainingDebt.lessThanOrEqualTo(0) ? 'paid' : 'partial',
+    },
+  });
+
+  return payment;
+}
+
 export async function payDebt(companyId: number, input: PayDebtInput): Promise<Payment> {
   const amount = new Prisma.Decimal(input.amount);
 
@@ -124,29 +190,105 @@ export async function payDebt(companyId: number, input: PayDebtInput): Promise<P
       throw new ValidationError({ message: 'Miqdor qarzdan oshib ketdi' });
     }
 
-    // 🔴 PAYMENT
-    const payment = await tx.payment.create({
-      data: {
+    const methodId = await resolveMethodId(tx, input.type, input.method);
+    return applySalePayment(tx, { companyId, sale, amount, type: input.type, methodId });
+  });
+}
+
+// ── Bulk qarz to'lash (FIFO) ──────────────────────────────
+//
+// Bir mijozning bir nechta qarzli sotuvini bitta summa bilan yopish.
+// Taqsimlash FIFO: eng eski (created_at) sotuvdan boshlab — har biriga
+// qarzi to'lguncha, qolgani keyingisiga o'tadi. Har sotuv uchun alohida
+// Payment + CustomerDebt('d') yoziladi — qachon/qancha to'langani logda qoladi.
+export interface PayDebtBulkResult {
+  total_paid: string;
+  payments: Array<{ sale: number; amount: string; payment_id: number; remaining_debt: string }>;
+}
+
+export async function payDebtBulk(
+  companyId: number,
+  input: PayDebtBulkInput,
+): Promise<PayDebtBulkResult> {
+  const totalAmount = new Prisma.Decimal(input.amount);
+
+  return prisma.$transaction(async (tx) => {
+    // Mijoz tenant doirasida mavjudligini tekshiramiz
+    const customer = await tx.customer.findFirst({
+      where: { id: input.customer, companyId },
+    });
+    if (!customer) throw new NotFound();
+
+    // 🔴 LOCK: mijozning (tanlangan) sotuvlarini FIFO tartibida qulflaymiz —
+    // parallel to'lovlar bir qarzni ikki marta yopib qo'ymasligi uchun.
+    const lockedRows = input.sales?.length
+      ? await tx.$queryRaw<Array<{ id: number }>>(
+          Prisma.sql`SELECT id FROM sales_sale
+                     WHERE company_id = ${companyId} AND customer_id = ${customer.id}
+                       AND id IN (${Prisma.join(input.sales)})
+                     ORDER BY created_at ASC, id ASC FOR UPDATE`,
+        )
+      : await tx.$queryRaw<Array<{ id: number }>>(
+          Prisma.sql`SELECT id FROM sales_sale
+                     WHERE company_id = ${companyId} AND customer_id = ${customer.id}
+                     ORDER BY created_at ASC, id ASC FOR UPDATE`,
+        );
+
+    if (input.sales?.length && lockedRows.length !== input.sales.length) {
+      throw new ValidationError({ message: "Tanlangan sotuvlar mijozga tegishli emas yoki topilmadi" });
+    }
+    if (lockedRows.length === 0) {
+      throw new ValidationError({ message: "Mijozda sotuvlar topilmadi" });
+    }
+
+    // Har sotuvning joriy qarzini hisoblaymiz (FIFO tartib saqlangan)
+    const debtSales: Array<{ sale: Sale; debt: Prisma.Decimal }> = [];
+    let totalDebt = new Prisma.Decimal(0);
+    for (const row of lockedRows) {
+      const sale = (await tx.sale.findFirst({ where: { id: row.id, companyId } })) as Sale;
+      const debt = await getSaleDebt(tx, sale.id);
+      if (debt.greaterThan(0)) {
+        debtSales.push({ sale, debt });
+        totalDebt = totalDebt.plus(debt);
+      }
+    }
+
+    if (debtSales.length === 0) {
+      throw new ValidationError({ message: "Tanlangan sotuvlarda qarz yo'q" });
+    }
+    if (totalAmount.greaterThan(totalDebt)) {
+      throw new ValidationError({
+        message: 'Miqdor qarzdan oshib ketdi',
+        total_debt: totalDebt.toFixed(2),
+        attempted: totalAmount.toFixed(2),
+      });
+    }
+
+    const methodId = await resolveMethodId(tx, input.type, input.method);
+
+    // 🔴 FIFO taqsimlash: eng eski sotuvdan boshlab
+    const results: PayDebtBulkResult['payments'] = [];
+    let remaining = totalAmount;
+    for (const { sale, debt } of debtSales) {
+      if (remaining.lessThanOrEqualTo(0)) break;
+      const pay = Prisma.Decimal.min(remaining, debt);
+      const payment = await applySalePayment(tx, {
         companyId,
-        customerId: sale.customerId,
-        amount,
+        sale,
+        amount: pay,
         type: input.type,
-        saleId: sale.id,
-      },
-    });
+        methodId,
+      });
+      remaining = remaining.minus(pay);
+      results.push({
+        sale: sale.id,
+        amount: pay.toFixed(2),
+        payment_id: payment.id,
+        remaining_debt: debt.minus(pay).toFixed(2),
+      });
+    }
 
-    // 🔴 DEBT REDUCE (SALE BILAN) — type = DECREASE ("d")
-    await tx.customerDebt.create({
-      data: {
-        companyId,
-        customerId: sale.customerId!,
-        saleId: sale.id,
-        amount,
-        type: 'd',
-      },
-    });
-
-    return payment;
+    return { total_paid: totalAmount.toFixed(2), payments: results };
   });
 }
 

@@ -9,6 +9,7 @@ import { geoRoutes } from './geo/geo.routes.js';
 import { plansRoutes } from './plans/plans.routes.js';
 import { subscriptionsRoutes } from './subscriptions/subscriptions.routes.js';
 import { paymentsRoutes } from './payments/payments.routes.js';
+import { paymentMethodsRoutes } from './payment-methods/paymentMethods.routes.js';
 import { billingRoutes } from './billing/billing.routes.js';
 import { notificationsRoutes } from './notifications/notifications.routes.js';
 import { auditRoutes } from './audit/audit.routes.js';
@@ -38,6 +39,7 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(plansRoutes, { prefix: '/plans' });
   await app.register(subscriptionsRoutes, { prefix: '/subscriptions' });
   await app.register(paymentsRoutes, { prefix: '/payments' });
+  await app.register(paymentMethodsRoutes, { prefix: '/payment-methods' });
   await app.register(billingRoutes, { prefix: '/billing' });
   await app.register(notificationsRoutes, { prefix: '/notifications' });
   await app.register(auditRoutes, { prefix: '/audit' });

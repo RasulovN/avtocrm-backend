@@ -185,7 +185,9 @@ export async function getTopSellingProducts(
 }
 
 // ── PaymentStructureService.get ──
-// Payment (sale.storeId filtri) -> type bo'yicha count, amount.
+// Payment (sale.storeId filtri) -> type + methodId bo'yicha count, amount:
+//   naqd bitta qator; karta to'lovlari kanal (Uzcard/Humo/Visa/Payme/...) bo'yicha
+//   alohida qatorlarga ajratiladi (kanal ko'rsatilmagan eski kartalar — "Karta").
 // 'debt' type Payment'dan chiqarib tashlanadi; qarz Sale.status='debt' orqali qo'shiladi.
 // percent = amount / total_amount * 100 (1 kasr) + '%'.
 export async function getPaymentStructure(
@@ -194,7 +196,7 @@ export async function getPaymentStructure(
   storeIds: number[],
 ) {
   const grouped = await prisma.payment.groupBy({
-    by: ['type'],
+    by: ['type', 'methodId'],
     where: {
       createdAt: { gte: dateFrom, lte: dateTo },
       sale: { storeId: { in: storeIds } },
@@ -207,6 +209,13 @@ export async function getPaymentStructure(
   let totalAmount = D0;
   for (const r of grouped) totalAmount = totalAmount.add(dec(r._sum.amount));
   if (totalAmount.isZero()) totalAmount = new Prisma.Decimal(1);
+
+  // Kanal nomlari (Uzcard, Humo, Payme...)
+  const methodIds = [...new Set(grouped.map((r) => r.methodId).filter((m): m is number => m !== null))];
+  const methods = methodIds.length
+    ? await prisma.paymentMethod.findMany({ where: { id: { in: methodIds } }, select: { id: true, name: true } })
+    : [];
+  const methodNames = new Map(methods.map((m) => [m.id, m.name]));
 
   // Qarz — Sale.status='debt' orqali
   const debtSales = await prisma.sale.aggregate({
@@ -228,16 +237,29 @@ export async function getPaymentStructure(
   let debtAmount = D0;
   for (const s of debtSaleRows) debtAmount = debtAmount.add(dec(s.totalAmount).sub(dec(s.paidAmount)));
 
-  const result: Array<{ method: string; count: number; amount: number; percent: string }> = [];
-
+  // type+method bo'yicha yig'ish: naqd hammasi bitta, karta kanal bo'yicha
+  interface Acc { count: number; amount: Prisma.Decimal }
+  const buckets = new Map<string, Acc>();
   for (const r of grouped) {
     if (r.type === 'debt') continue; // Sale orqali alohida
-    const amount = dec(r._sum.amount);
+    const label =
+      r.type === 'card'
+        ? (r.methodId !== null ? methodNames.get(r.methodId) ?? PAYMENT_METHOD_LABELS.card : PAYMENT_METHOD_LABELS.card)
+        : PAYMENT_METHOD_LABELS[r.type] ?? r.type;
+    const acc = buckets.get(label) ?? { count: 0, amount: D0 };
+    acc.count += r._count._all;
+    acc.amount = acc.amount.add(dec(r._sum.amount));
+    buckets.set(label, acc);
+  }
+
+  const result: Array<{ method: string; count: number; amount: number; percent: string }> = [];
+  const rows = [...buckets.entries()].sort(([, a], [, b]) => b.amount.cmp(a.amount));
+  for (const [label, acc] of rows) {
     result.push({
-      method: PAYMENT_METHOD_LABELS[r.type] ?? r.type,
-      count: r._count._all,
-      amount: num(amount),
-      percent: `${round1(amount.div(totalAmount).mul(100).toNumber())}%`,
+      method: label,
+      count: acc.count,
+      amount: num(acc.amount),
+      percent: `${round1(acc.amount.div(totalAmount).mul(100).toNumber())}%`,
     });
   }
 

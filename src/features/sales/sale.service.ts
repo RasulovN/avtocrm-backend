@@ -72,12 +72,15 @@ export async function createSale(params: {
 
   return prisma.$transaction(async (tx) => {
     // 🔴 STORE LOGIC
-    //  1) X-Store-ID orqali tanlangan do'kon (sotuvchi/menejer/egasi) — eng ustun.
-    //  2) data.store (yuborilgan bo'lsa).
+    //  1) data.store — POS'da shu sotuv uchun ANIQ tanlangan do'kon (eng ustun;
+    //     aks holda X-Store-ID konteksti boshqa do'konni ko'rsatsa, zaxira bor
+    //     do'kon o'rniga bo'sh do'kondan sotishga urinib "Mahsulot mavjud emas"
+    //     xatosi chiqadi).
+    //  2) X-Store-ID orqali tanlangan do'kon (ambient kontekst).
     //  3) foydalanuvchining aktiv StoreUser linki.
     // Hammasi tenant (companyId) doirasida tekshiriladi.
     let storeId: number;
-    const chosen = selectedStoreId ?? data.store ?? null;
+    const chosen = data.store ?? selectedStoreId ?? null;
     if (chosen != null) {
       const store = await tx.store.findFirst({ where: { id: chosen, companyId } });
       if (!store) throw new NotFound();
@@ -196,6 +199,18 @@ export async function createSale(params: {
     const finalTotalAmount = subtotal.minus(calculatedDiscount);
 
     // 🔴 PAYMENTS
+    // Karta kanali (method) berilgan bo'lsa — faol PaymentMethod ekanini tekshiramiz.
+    const methodIds = [...new Set(paymentsData.map((p) => p.method).filter((m): m is number => m != null))];
+    const validMethods = methodIds.length
+      ? await tx.paymentMethod.findMany({ where: { id: { in: methodIds }, isActive: true }, select: { id: true } })
+      : [];
+    const validMethodIds = new Set(validMethods.map((m) => m.id));
+    for (const id of methodIds) {
+      if (!validMethodIds.has(id)) {
+        throw new ValidationError("Tanlangan to'lov turi mavjud emas yoki nofaol");
+      }
+    }
+
     let paidAmount = new Prisma.Decimal(0);
     for (const p of paymentsData) {
       const amount = new Prisma.Decimal(p.amount);
@@ -206,9 +221,31 @@ export async function createSale(params: {
           customerId,
           amount,
           type: p.type,
+          methodId: p.type === 'card' ? (p.method ?? null) : null,
         },
       });
       paidAmount = paidAmount.plus(amount);
+    }
+
+    // 🔴 ORTIQCHA TO'LOV GUARD: to'langan summa yakuniy summadan oshmasligi kerak.
+    // Frontend ham bloklaydi — bu server tomonidagi yakuniy himoya.
+    if (paidAmount.greaterThan(finalTotalAmount)) {
+      throw new ValidationError({
+        payment_error: "To'langan summa umumiy summadan oshib ketdi!",
+        total: decimalToString(finalTotalAmount),
+        paid: decimalToString(paidAmount),
+      });
+    }
+
+    // 🔴 QARZ GUARD: to'liq to'lanmagan sotuvda mijoz majburiy — aks holda qarz
+    // hech kimga biriktirilmay yo'qolib, kassada kamomad chiqaradi.
+    if (paidAmount.lessThan(finalTotalAmount) && !customerId) {
+      throw new ValidationError({
+        customer_error: 'Qarzli sotuv uchun mijoz tanlanishi shart',
+        total: decimalToString(finalTotalAmount),
+        paid: decimalToString(paidAmount),
+        debt: decimalToString(finalTotalAmount.minus(paidAmount)),
+      });
     }
 
     // 🔴 STATUS
@@ -273,7 +310,7 @@ type SaleWithRelations = Prisma.SaleGetPayload<{
     customer: true;
     seller: true;
     items: { include: { product: true } };
-    payments: true;
+    payments: { include: { method: true } };
   };
 }>;
 
@@ -282,7 +319,7 @@ const saleInclude = {
   customer: true,
   seller: true,
   items: { include: { product: true }, orderBy: { id: 'asc' } },
-  payments: { orderBy: { createdAt: 'asc' } },
+  payments: { orderBy: { createdAt: 'asc' }, include: { method: true } },
 } satisfies Prisma.SaleInclude;
 
 // Django _debt_increase_subquery / _debt_decrease_subquery ekvivalenti:
@@ -330,6 +367,9 @@ function serializePayment(p: SaleWithRelations['payments'][number]) {
     id: p.id,
     amount: decimalToString(p.amount),
     type: p.type,
+    method: p.methodId,
+    method_name: p.method ? p.method.name : null,
+    method_code: p.method ? p.method.code : null,
     created_at: p.createdAt,
   };
 }

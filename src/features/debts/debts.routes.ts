@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { getCompanyId } from '../../common/tenant.js';
-import { payDebtSchema } from './debts.schemas.js';
-import { listCustomerDebts, getCustomerDebt, payDebt } from './debts.service.js';
+import { payDebtBulkSchema, payDebtSchema } from './debts.schemas.js';
+import { listCustomerDebts, getCustomerDebt, payDebt, payDebtBulk } from './debts.service.js';
 
 // apps/debts/urls.py:
 //   path('list/',      PayDebtListAPIView)    -> GET    /debts/list/
@@ -31,6 +31,19 @@ export async function debtsRoutes(app: FastifyInstance) {
         payment_id: payment.id,
         amount: payment.amount.toFixed(2),
       });
+    },
+  );
+
+  // Bir mijozning bir nechta qarzli sotuvini bitta summa bilan yopish (FIFO).
+  // Response 201: { total_paid, payments: [{sale, amount, payment_id, remaining_debt}] }.
+  app.post(
+    '/pay-bulk/',
+    { onRequest: [app.requireCompany, app.requirePermission('company.debts.create')] },
+    async (req, reply) => {
+      const companyId = getCompanyId(req);
+      const data = payDebtBulkSchema.parse(req.body);
+      const result = await payDebtBulk(companyId, data);
+      return reply.status(201).send(result);
     },
   );
 

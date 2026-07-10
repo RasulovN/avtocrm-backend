@@ -36,11 +36,13 @@ const saleItemInputSchema = z.object({
 // Django PaymentInputSerializer:
 //   type = ChoiceField(Payment.Type.choices = cash/card)
 //   amount = DecimalField; validate: amount > 0 ("To'lov ijoboy bo'lishi kerak")
+//   method — karta to'lovi kanali (PaymentMethod.id: Uzcard/Humo/Payme/...)
 const paymentInputSchema = z.object({
   type: z.enum(['cash', 'card']),
   amount: decimalString.refine((v) => Number(v) > 0, {
     message: "To'lov ijoboy bo'lishi kerak",
   }),
+  method: z.number().int().nullable().optional(),
 });
 
 // Django SaleCreateSerializer:

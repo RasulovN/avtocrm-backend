@@ -4,6 +4,7 @@ import { prisma } from './db/prisma.js';
 import { initRealtime } from './realtime/io.js';
 import { startScheduler, stopScheduler } from './jobs/scheduler.js';
 import { syncPermissions, regrantSystemRoles } from './features/rbac/rbac.service.js';
+import { seedDefaultPaymentMethods } from './features/payment-methods/paymentMethods.service.js';
 
 async function main() {
   const app = await buildApp();
@@ -20,6 +21,13 @@ async function main() {
     await regrantSystemRoles();
   } catch (err) {
     app.log.error(err, 'RBAC sync xatosi');
+  }
+
+  // To'lov turlari katalogi bo'sh bo'lsa default (Uzcard, Humo, Payme...) yaratiladi.
+  try {
+    await seedDefaultPaymentMethods();
+  } catch (err) {
+    app.log.error(err, "To'lov turlari seed xatosi");
   }
 
   const shutdown = async () => {

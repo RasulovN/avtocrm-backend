@@ -937,20 +937,42 @@ model SaleItem {
 }
 
 model Payment {
-  id         Int       @id @default(autoincrement())
-  companyId  Int       @map("company_id")
-  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  saleId     Int?      @map("sale_id")
-  sale       Sale?     @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  customerId Int?      @map("customer_id")
-  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  amount     Decimal   @db.Decimal(20, 2)
-  type       String    @db.VarChar(5) // cash/card
-  createdAt  DateTime  @default(now()) @map("created_at")
-  updatedAt  DateTime  @updatedAt @map("updated_at")
+  id         Int            @id @default(autoincrement())
+  companyId  Int            @map("company_id")
+  company    Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  saleId     Int?           @map("sale_id")
+  sale       Sale?          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  customerId Int?           @map("customer_id")
+  customer   Customer?      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  amount     Decimal        @db.Decimal(20, 2)
+  type       String         @db.VarChar(5) // cash/card
+  methodId   Int?           @map("method_id") // karta to'lovi kanali (Uzcard/Humo/Payme/...)
+  method     PaymentMethod? @relation(fields: [methodId], references: [id], onDelete: SetNull)
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
 
   @@index([companyId])
+  @@index([methodId])
   @@map("sales_payment")
+}
+
+// Platforma darajasidagi to'lov turlari katalogi (super admin boshqaradi).
+// POS'da "Karta" tanlanganda kanal tanlash uchun: Uzcard, Humo, Visa, Payme, Click...
+model PaymentMethod {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique @db.VarChar(40) // uzcard/humo/visa/payme/click/uzum...
+  name      String   @db.VarChar(100) // ko'rsatiladigan nom (brend — tarjimasiz)
+  icon      String?  @db.VarChar(255) // ixtiyoriy emoji yoki rasm URL
+  isActive  Boolean  @default(true) @map("is_active")
+  isDefault Boolean  @default(false) @map("is_default") // POS'da oldindan tanlangan
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  payments Payment[]
+
+  @@index([isActive, sortOrder])
+  @@map("payment_method")
 }
 
 model SaleReturn {

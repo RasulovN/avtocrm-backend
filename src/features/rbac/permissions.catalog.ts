@@ -92,6 +92,8 @@ const PLATFORM_DEFS: { code: string; label: string; module: string; action: stri
   { code: 'platform.subscriptions.view', label: "Obunalar ro'yxati", module: 'platform_subscriptions', action: 'view' },
   { code: 'platform.subscriptions.manage', label: 'Obunalarni boshqarish', module: 'platform_subscriptions', action: 'manage' },
   { code: 'platform.payments.view', label: "To'lovlar", module: 'platform_payments', action: 'view' },
+  { code: 'platform.payment_methods.view', label: "To'lov turlari", module: 'platform_payment_methods', action: 'view' },
+  { code: 'platform.payment_methods.manage', label: "To'lov turlarini boshqarish", module: 'platform_payment_methods', action: 'manage' },
   { code: 'platform.company_categories.view', label: 'Kompaniya kategoriyalari', module: 'platform_company_categories', action: 'view' },
   { code: 'platform.company_categories.manage', label: 'Kategoriyalarni boshqarish', module: 'platform_company_categories', action: 'manage' },
   { code: 'platform.geo.view', label: "Manzil ma'lumotlari", module: 'platform_geo', action: 'view' },
