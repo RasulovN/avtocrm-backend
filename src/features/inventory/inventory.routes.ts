@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { getPageParams, paginate } from '../../common/pagination.js';
 import { getCompanyId } from '../../common/tenant.js';
 import {
@@ -17,11 +17,28 @@ import {
   listMovements,
 } from './inventory.service.js';
 import { overCounts, shortCounts } from './inventoryCount.service.js';
-import { listLowStock, LOW_STOCK_STATUS } from './lowStock.service.js';
+import { listLowStock, reconcileLowStock, LOW_STOCK_STATUS } from './lowStock.service.js';
+import { resolveReportStoreIds } from '../reports/storeScope.js';
+import { prisma } from '../../db/prisma.js';
+import { Forbidden } from '../../common/errors.js';
 
 // Django: apps/inventory/urls.py
 // Prefix '/inventory' modules/index.ts'da registratsiya qilingan.
 // Route path'lar Django bilan AYNAN bir xil (trailing slash).
+async function resolveLowStockStoreIds(req: FastifyRequest, companyId: number, requested?: string): Promise<number[]> {
+  if (!req.authUser!.isSuperuser && !req.permissions.has('company.stores.view')) {
+    return resolveReportStoreIds(req.authUser!, companyId, requested);
+  }
+  const stores = await prisma.store.findMany({ where: { companyId }, select: { id: true } });
+  const allowed = stores.map((store) => store.id);
+  if (!requested || requested === 'all') return allowed;
+  const storeId = Number(requested);
+  if (!Number.isInteger(storeId) || !allowed.includes(storeId)) {
+    throw new Forbidden({ detail: "Sizda bu do'kon ma'lumotlarini ko'rishga ruxsat yo'q." });
+  }
+  return [storeId];
+}
+
 export async function inventoryRoutes(app: FastifyInstance) {
   // ── GET list/ — sessiyalar (company scope + inventory.view) ──
   app.get(
@@ -29,11 +46,13 @@ export async function inventoryRoutes(app: FastifyInstance) {
     { onRequest: [app.requireCompany, app.requirePermission('company.inventory.view')] },
     async (req) => {
       const companyId = getCompanyId(req);
+      const q = req.query as Record<string, string | undefined>;
       const page = getPageParams(req);
       const { results, count } = await listSessions({
         companyId,
         isSuperuser: req.authUser!.isSuperuser,
         userId: req.authUser!.id,
+        status: q.status,
         skip: page.skip,
         take: page.take,
       });
@@ -169,11 +188,13 @@ export async function inventoryRoutes(app: FastifyInstance) {
       const companyId = getCompanyId(req);
       const q = req.query as Record<string, string | undefined>;
       const page = getPageParams(req);
+      const storeIds = await resolveLowStockStoreIds(req, companyId, q.store);
+      await reconcileLowStock({ companyId, storeIds });
       const { results, count } = await listLowStock({
         companyId,
         status: LOW_STOCK_STATUS.OPEN,
         action_type: q.action_type,
-        store: q.store !== undefined ? Number(q.store) : undefined,
+        storeIds,
         product: q.product !== undefined ? Number(q.product) : undefined,
         ordering: q.ordering,
         skip: page.skip,
@@ -191,11 +212,12 @@ export async function inventoryRoutes(app: FastifyInstance) {
       const companyId = getCompanyId(req);
       const q = req.query as Record<string, string | undefined>;
       const page = getPageParams(req);
+      const storeIds = await resolveLowStockStoreIds(req, companyId, q.store);
       const { results, count } = await listLowStock({
         companyId,
         status: LOW_STOCK_STATUS.RESOLVED,
         action_type: q.action_type,
-        store: q.store !== undefined ? Number(q.store) : undefined,
+        storeIds,
         product: q.product !== undefined ? Number(q.product) : undefined,
         ordering: q.ordering,
         skip: page.skip,

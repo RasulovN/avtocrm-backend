@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { ValidationError, NotFound } from '../../common/errors.js';
+import { evaluateLowStock } from './lowStock.service.js';
 
 // Django: apps/inventory/services/inventory_service.py (InventoryService)
 //         + inventory_selector.py (InventorySelector)
@@ -224,6 +225,11 @@ export async function finalize(params: { companyId: number; sessionId: number })
 
     if (adjustments.length > 0) {
       await tx.inventoryAdjustment.createMany({ data: adjustments });
+      await evaluateLowStock({
+        store: session.storeId,
+        productIds: adjustments.map((item) => item.productId),
+        db: tx,
+      });
     }
 
     await tx.inventorySession.update({
@@ -269,16 +275,28 @@ interface SessionRow {
   startedAt: Date;
   status: string;
   snapshotTaken: boolean;
+  store: { name: string };
+  adjustments: Array<{ difference: number }>;
+  _count: { snapshots: number };
 }
 
 function serializeSession(s: SessionRow) {
+  const shortageAdjustments = s.adjustments.filter((item) => item.difference < 0);
+  const shortageItems = shortageAdjustments.length;
+  const mismatchItems = s.adjustments.length;
   return {
     id: s.id,
     store: s.storeId,
+    store_name: s.store.name,
     started_by: s.startedById,
     started_at: s.startedAt,
     status: s.status,
     snapshot_taken: s.snapshotTaken,
+    total_items: s._count.snapshots,
+    matched_items: Math.max(0, s._count.snapshots - mismatchItems),
+    mismatched_items: mismatchItems,
+    shortage_items: shortageItems,
+    shortage_quantity: shortageAdjustments.reduce((total, item) => total + Math.abs(item.difference), 0),
   };
 }
 
@@ -286,16 +304,21 @@ export async function listSessions(params: {
   companyId: number;
   isSuperuser: boolean;
   userId: number;
+  status?: string;
   skip: number;
   take: number;
 }) {
   // companyId scope hamisha qo'llanadi; superuser ham faqat shu tenant sessiyalarini ko'radi.
-  const where: Prisma.InventorySessionWhereInput = params.isSuperuser
+  const accessWhere: Prisma.InventorySessionWhereInput = params.isSuperuser
     ? { companyId: params.companyId }
     : {
         companyId: params.companyId,
         store: { userLinks: { some: { userId: params.userId, isActive: true } } },
       };
+  const where: Prisma.InventorySessionWhereInput = {
+    ...accessWhere,
+    ...(params.status ? { status: params.status } : {}),
+  };
 
   const [rows, count] = await Promise.all([
     prisma.inventorySession.findMany({
@@ -303,6 +326,11 @@ export async function listSessions(params: {
       orderBy: { startedAt: 'desc' },
       skip: params.skip,
       take: params.take,
+      include: {
+        store: { select: { name: true } },
+        adjustments: { select: { difference: true } },
+        _count: { select: { snapshots: true } },
+      },
     }),
     prisma.inventorySession.count({ where }),
   ]);

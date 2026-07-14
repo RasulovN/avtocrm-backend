@@ -4,8 +4,7 @@ import { ValidationError } from '../../common/errors.js';
 import { mediaUrl } from '../../common/media.js';
 import type { PageParams } from '../../common/pagination.js';
 import type { StockEntryCreateInput } from './contract.schemas.js';
-
-type Tx = Prisma.TransactionClient;
+import { handleStockEntry } from '../inventory/inventory.hooks.js';
 
 // ─────────────────────────────────────────────
 // StockEntry.calculate_payment_fields()
@@ -39,37 +38,6 @@ export function calculatePaymentFields(
 
   const debtAmount = totalAmount - paidAmount;
   return { paidAmount, paymentType, debtAmount };
-}
-
-// ─────────────────────────────────────────────
-// Inventory hook (handle_stock_entry) — InventoryMovement qismi.
-//   Django: active InventorySession bo'lsa har item uchun ENTRY ("e") movement.
-//   LowStockService.schedule_evaluation — inventory moduliga tegishli, post-commit
-//   ishlaydi; node inventory moduli hali ko'chirilmagan, shu sabab no-op hook qoldirildi.
-// ─────────────────────────────────────────────
-async function handleStockEntryMovements(
-  tx: Tx,
-  companyId: number,
-  entry: { id: number; storeId: number },
-  items: { productId: number; quantity: number }[],
-): Promise<void> {
-  // Session companyId mosligini tekshiramiz — cross-tenant session'ga movement
-  // yozilishini bloklaymiz (InventoryMovement'da companyId yo'q, session orqali scope).
-  const session = await tx.inventorySession.findFirst({
-    where: { storeId: entry.storeId, status: 'active', companyId },
-    select: { id: true },
-  });
-  if (!session) return;
-
-  await tx.inventoryMovement.createMany({
-    data: items.map((item) => ({
-      sessionId: session.id,
-      productId: item.productId,
-      quantity: item.quantity,
-      type: 'e', // InventoryMovement.Type.ENTRY
-      refId: entry.id,
-    })),
-  });
 }
 
 // ─────────────────────────────────────────────
@@ -207,12 +175,11 @@ export async function createEntry(opts: {
     }
 
     // handle_stock_entry — active session bo'lsa InventoryMovement yoziladi
-    await handleStockEntryMovements(
-      tx,
-      companyId,
-      { id: created.id, storeId: data.store },
-      data.items.map((i) => ({ productId: i.product, quantity: i.quantity })),
-    );
+    await handleStockEntry({
+      storeId: data.store,
+      entryId: created.id,
+      lines: data.items.map((i) => ({ productId: i.product, quantity: i.quantity })),
+    }, tx);
 
     return created;
   });

@@ -10,6 +10,7 @@ import type { PageParams } from '../../common/pagination.js';
 import { env } from '../../config/env.js';
 import { generateBarcodeImage, generateUniqueBarcode, normalizeBarcode } from './barcode.js';
 import type { ProductCreateInput, ProductUpdateInput } from './products.schemas.js';
+import { reevaluateProductLowStock } from '../inventory/lowStock.service.js';
 
 const MAX_PRODUCT_IMAGES = 7;
 const MAX_PRODUCT_IMAGE_SIZE = 5 * 1024 * 1024;
@@ -416,6 +417,9 @@ export async function updateProduct(
 
   await prisma.$transaction(async (tx) => {
     await tx.product.update({ where: { id: pk }, data: updateData });
+    if (data.min_stock !== undefined && data.min_stock !== product.minStock) {
+      await reevaluateProductLowStock({ product: pk, db: tx });
+    }
 
     // DELETE IMAGES (DB rowlar; fayllar diskda qoldiriladi — best-effort)
     if (data.delete_image_ids && data.delete_image_ids.length > 0) {

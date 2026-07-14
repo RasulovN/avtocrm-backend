@@ -11,6 +11,7 @@ import { NotFound } from '../../common/errors.js';
 
 const COUNT_STATUS_MORE = 'm';
 const COUNT_STATUS_LESS = 'l';
+const SESSION_COMPLETED = 'completed';
 
 interface CountRowWithProduct {
   id: number;
@@ -86,10 +87,75 @@ async function listResultCounts(status: string, params: ResultListParams) {
   // session shu tenant'ga tegishli bo'lishi shart.
   const session = await prisma.inventorySession.findFirst({
     where: { id: params.sessionId, companyId: params.companyId },
-    select: { storeId: true },
+    select: { storeId: true, status: true },
   });
   if (!session) throw new NotFound();
   const storeId = session.storeId;
+
+  // Yakunlangan sessiyada joriy ProductBatch qoldig'i allaqachon inventarizatsiya
+  // natijasiga tenglashtirilgan bo'ladi. Tarixiy kamomat/ortiqchani adjustment va
+  // sessiya boshidagi snapshotdan olamiz, aks holda diff noto'g'ri 0 chiqadi.
+  if (session.status === SESSION_COMPLETED) {
+    const productWhere: Prisma.ProductWhereInput = {};
+    if (params.category !== undefined) productWhere.categoryId = params.category;
+    if (params.search) productWhere.name = { contains: params.search, mode: 'insensitive' };
+
+    const adjustments = await prisma.inventoryAdjustment.findMany({
+      where: {
+        sessionId: params.sessionId,
+        difference: status === COUNT_STATUS_LESS ? { lt: 0 } : { gt: 0 },
+        ...(Object.keys(productWhere).length ? { product: productWhere } : {}),
+      },
+      include: {
+        product: {
+          select: {
+            name: true,
+            category: { select: { name: true } },
+            unitMeasurement: { select: { measurement: true } },
+          },
+        },
+      },
+    });
+    const productIds = adjustments.map((item) => item.productId);
+    const [snapshots, counts] = await Promise.all([
+      prisma.inventorySnapshot.findMany({
+        where: { sessionId: params.sessionId, productId: { in: productIds } },
+        select: { productId: true, expectedQuantity: true },
+      }),
+      prisma.inventoryCount.findMany({
+        where: { sessionId: params.sessionId, productId: { in: productIds } },
+        select: { productId: true, countedQuantity: true, isCheck: true },
+      }),
+    ]);
+    const snapshotMap = new Map(snapshots.map((item) => [item.productId, item.expectedQuantity]));
+    const countMap = new Map(counts.map((item) => [item.productId, item]));
+    const rows = adjustments.map((item) => ({
+      id: item.id,
+      product: item.productId,
+      product_name: item.product.name,
+      category_name: item.product.category?.name ?? null,
+      unit_measurement: item.product.unitMeasurement?.measurement ?? null,
+      counted_quantity: countMap.get(item.productId)?.countedQuantity ?? 0,
+      system_quantity: snapshotMap.get(item.productId) ?? 0,
+      diff: item.difference,
+      status,
+      is_check: countMap.get(item.productId)?.isCheck ?? false,
+      created_at: item.createdAt,
+    })).filter((item) => params.is_check === undefined || item.is_check === params.is_check);
+
+    const orderingRaw = (params.ordering ?? '-diff').split(',')[0]?.trim() ?? '-diff';
+    const desc = orderingRaw.startsWith('-');
+    const keyRaw = (desc ? orderingRaw.slice(1) : orderingRaw) as SortKey;
+    const key: SortKey = ALLOWED_SORTS.includes(keyRaw) ? keyRaw : 'diff';
+    rows.sort((a, b) => {
+      const av = a[key] as number | Date;
+      const bv = b[key] as number | Date;
+      const an = av instanceof Date ? av.getTime() : av;
+      const bn = bv instanceof Date ? bv.getTime() : bv;
+      return desc ? bn - an : an - bn;
+    });
+    return { results: rows.slice(params.skip, params.skip + params.take), count: rows.length };
+  }
 
   const counts = await prisma.inventoryCount.findMany({
     where,

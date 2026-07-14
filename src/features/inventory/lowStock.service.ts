@@ -110,6 +110,7 @@ export async function evaluateLowStock(params: {
 
   const toCreate: Array<{ productId: number; currentQuantity: number; minStock: number }> = [];
   const toResolve: number[] = [];
+  const toRefresh: Array<{ id: number; currentQuantity: number; minStock: number }> = [];
 
   for (const productId of ids) {
     if (!stockMap.has(productId)) {
@@ -120,7 +121,9 @@ export async function evaluateLowStock(params: {
     const quantity = stockMap.get(productId) ?? 0;
 
     if (threshold === 0) {
-      // Monitoring o'chirilgan -> hech narsa qilmaymiz.
+      // Monitoring o'chirilsa avvalgi ochiq ogohlantirish ham yopilishi kerak.
+      const existing = openMap.get(productId);
+      if (existing) toResolve.push(existing.id);
       continue;
     }
 
@@ -129,6 +132,8 @@ export async function evaluateLowStock(params: {
     if (quantity <= threshold) {
       if (!existing) {
         toCreate.push({ productId, currentQuantity: quantity, minStock: threshold });
+      } else {
+        toRefresh.push({ id: existing.id, currentQuantity: quantity, minStock: threshold });
       }
     } else if (existing) {
       toResolve.push(existing.id);
@@ -140,6 +145,13 @@ export async function evaluateLowStock(params: {
     await client.lowStockItem.updateMany({
       where: { id: { in: toResolve } },
       data: { status: STATUS_RESOLVED, resolvedAt: new Date() },
+    });
+  }
+
+  for (const item of toRefresh) {
+    await client.lowStockItem.update({
+      where: { id: item.id },
+      data: { currentQuantity: item.currentQuantity, minStock: item.minStock, actionType },
     });
   }
 
@@ -264,6 +276,25 @@ export async function reevaluateProductLowStock(params: {
   return out;
 }
 
+/** Barcha mavjud batchlarni qayta tekshiradi; missed hook va legacy ma'lumotlarni tiklaydi. */
+export async function reconcileLowStock(params: { companyId: number; storeIds: number[] }): Promise<void> {
+  if (params.storeIds.length === 0) return;
+  const rows = await prisma.productBatch.findMany({
+    where: { companyId: params.companyId, storeId: { in: params.storeIds } },
+    select: { storeId: true, productId: true },
+    distinct: ['storeId', 'productId'],
+  });
+  const byStore = new Map<number, number[]>();
+  for (const row of rows) {
+    const ids = byStore.get(row.storeId) ?? [];
+    ids.push(row.productId);
+    byStore.set(row.storeId, ids);
+  }
+  for (const [store, productIds] of byStore) {
+    await evaluateLowStock({ store, productIds });
+  }
+}
+
 // ── List serializatsiya (LowStockItemSerializer) ──
 
 export interface LowStockRow {
@@ -302,6 +333,7 @@ export interface LowStockListParams {
   status: string;
   action_type?: string;
   store?: number;
+  storeIds?: number[];
   product?: number;
   ordering?: string;
   skip: number;
@@ -335,13 +367,14 @@ export async function listLowStock(params: LowStockListParams) {
   const where: Prisma.LowStockItemWhereInput = { companyId: params.companyId, status: params.status };
   if (params.action_type) where.actionType = params.action_type;
   if (params.store !== undefined) where.storeId = params.store;
+  else if (params.storeIds) where.storeId = { in: params.storeIds };
   if (params.product !== undefined) where.productId = params.product;
 
   // OPEN ro'yxati default `-created_at`; RESOLVED tarixi `-resolved_at, -created_at`.
   const fallback: Prisma.LowStockItemOrderByWithRelationInput[] =
     params.status === STATUS_RESOLVED
       ? [{ resolvedAt: 'desc' }, { createdAt: 'desc' }]
-      : [{ createdAt: 'desc' }];
+      : [{ createdAt: 'desc' }, { id: 'desc' }];
 
   const orderBy = buildLowStockOrderBy(params.ordering, fallback);
 
