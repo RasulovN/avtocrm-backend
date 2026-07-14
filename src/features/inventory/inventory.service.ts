@@ -276,14 +276,43 @@ interface SessionRow {
   status: string;
   snapshotTaken: boolean;
   store: { name: string };
-  adjustments: Array<{ difference: number }>;
+  adjustments: Array<{ productId: number; difference: number; product: { name: string } }>;
   _count: { snapshots: number };
 }
 
-function serializeSession(s: SessionRow) {
+type BatchCostRow = { storeId: number; productId: number; quantity: number; purchasePrice: Prisma.Decimal };
+
+export function buildUnitCostMap(batches: BatchCostRow[]): Map<string, number> {
+  const grouped = new Map<string, { quantity: number; value: number; fallback: number }>();
+  for (const batch of batches) {
+    const key = `${batch.storeId}:${batch.productId}`;
+    const current = grouped.get(key) ?? { quantity: 0, value: 0, fallback: 0 };
+    const price = Number(batch.purchasePrice);
+    current.quantity += Math.max(0, batch.quantity);
+    current.value += Math.max(0, batch.quantity) * price;
+    current.fallback = price;
+    grouped.set(key, current);
+  }
+  return new Map(
+    [...grouped].map(([key, value]) => [key, value.quantity > 0 ? value.value / value.quantity : value.fallback]),
+  );
+}
+
+function serializeSession(s: SessionRow, unitCosts: Map<string, number>) {
   const shortageAdjustments = s.adjustments.filter((item) => item.difference < 0);
   const shortageItems = shortageAdjustments.length;
   const mismatchItems = s.adjustments.length;
+  const shortageProducts = shortageAdjustments.map((item) => {
+    const quantity = Math.abs(item.difference);
+    const unitCost = unitCosts.get(`${s.storeId}:${item.productId}`) ?? 0;
+    return {
+      product_id: item.productId,
+      product_name: item.product.name,
+      quantity,
+      unit_cost: unitCost,
+      loss_amount: quantity * unitCost,
+    };
+  });
   return {
     id: s.id,
     store: s.storeId,
@@ -297,6 +326,8 @@ function serializeSession(s: SessionRow) {
     mismatched_items: mismatchItems,
     shortage_items: shortageItems,
     shortage_quantity: shortageAdjustments.reduce((total, item) => total + Math.abs(item.difference), 0),
+    shortage_loss: shortageProducts.reduce((total, item) => total + item.loss_amount, 0),
+    shortage_products: shortageProducts,
   };
 }
 
@@ -328,14 +359,25 @@ export async function listSessions(params: {
       take: params.take,
       include: {
         store: { select: { name: true } },
-        adjustments: { select: { difference: true } },
+        adjustments: {
+          select: { productId: true, difference: true, product: { select: { name: true } } },
+        },
         _count: { select: { snapshots: true } },
       },
     }),
     prisma.inventorySession.count({ where }),
   ]);
 
-  return { results: rows.map(serializeSession), count };
+  const productIds = [...new Set(rows.flatMap((row) => row.adjustments.map((item) => item.productId)))];
+  const storeIds = [...new Set(rows.map((row) => row.storeId))];
+  const batches = productIds.length > 0
+    ? await prisma.productBatch.findMany({
+        where: { companyId: params.companyId, storeId: { in: storeIds }, productId: { in: productIds }, isActive: true },
+        select: { storeId: true, productId: true, quantity: true, purchasePrice: true },
+      })
+    : [];
+  const unitCosts = buildUnitCostMap(batches);
+  return { results: rows.map((row) => serializeSession(row, unitCosts)), count };
 }
 
 // ============================================================

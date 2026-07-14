@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { NotFound } from '../../common/errors.js';
+import { buildUnitCostMap } from './inventory.service.js';
 
 // Django: apps/inventory/services/inventory_count_service.py (InventoryResultService)
 //         + serializers/inventory_count_serializer.py (InventoryCountSerializer)
@@ -117,7 +118,7 @@ async function listResultCounts(status: string, params: ResultListParams) {
       },
     });
     const productIds = adjustments.map((item) => item.productId);
-    const [snapshots, counts] = await Promise.all([
+    const [snapshots, counts, batches] = await Promise.all([
       prisma.inventorySnapshot.findMany({
         where: { sessionId: params.sessionId, productId: { in: productIds } },
         select: { productId: true, expectedQuantity: true },
@@ -126,10 +127,17 @@ async function listResultCounts(status: string, params: ResultListParams) {
         where: { sessionId: params.sessionId, productId: { in: productIds } },
         select: { productId: true, countedQuantity: true, isCheck: true },
       }),
+      prisma.productBatch.findMany({
+        where: { companyId: params.companyId, storeId, productId: { in: productIds }, isActive: true },
+        select: { storeId: true, productId: true, quantity: true, purchasePrice: true },
+      }),
     ]);
     const snapshotMap = new Map(snapshots.map((item) => [item.productId, item.expectedQuantity]));
     const countMap = new Map(counts.map((item) => [item.productId, item]));
-    const rows = adjustments.map((item) => ({
+    const unitCosts = buildUnitCostMap(batches);
+    const rows = adjustments.map((item) => {
+      const unitCost = unitCosts.get(`${storeId}:${item.productId}`) ?? 0;
+      return ({
       id: item.id,
       product: item.productId,
       product_name: item.product.name,
@@ -138,10 +146,13 @@ async function listResultCounts(status: string, params: ResultListParams) {
       counted_quantity: countMap.get(item.productId)?.countedQuantity ?? 0,
       system_quantity: snapshotMap.get(item.productId) ?? 0,
       diff: item.difference,
+      unit_cost: unitCost,
+      loss_amount: status === COUNT_STATUS_LESS ? Math.abs(item.difference) * unitCost : 0,
       status,
       is_check: countMap.get(item.productId)?.isCheck ?? false,
       created_at: item.createdAt,
-    })).filter((item) => params.is_check === undefined || item.is_check === params.is_check);
+    });
+    }).filter((item) => params.is_check === undefined || item.is_check === params.is_check);
 
     const orderingRaw = (params.ordering ?? '-diff').split(',')[0]?.trim() ?? '-diff';
     const desc = orderingRaw.startsWith('-');
