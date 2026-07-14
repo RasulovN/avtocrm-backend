@@ -68,19 +68,6 @@ function serializeImage(img: { id: number; image: string }) {
   return { id: img.id, image: mediaUrl(img.image) };
 }
 
-// ProductGetSerializer (create javobi)
-function serializeProductGet(p: Product & { category: { name: string } | null }) {
-  return {
-    id: p.id,
-    name: p.name,
-    description: p.description,
-    min_stock: p.minStock,
-    category: p.categoryId,
-    category_name: p.category?.name ?? null,
-    created_at: p.createdAt,
-  };
-}
-
 // ProductListSerializer batches (barcha do'konlar bo'yicha — virtual yozuvlar bilan)
 function serializeBatchesForStores(
   batches: Array<{
@@ -231,6 +218,7 @@ export async function getProductDetail(pk: number, companyId: number) {
   });
   if (!p) throw new NotFound();
   return {
+    id: p.id,
     category: p.categoryId,
     unit_measurement: p.unitMeasurementId,
     name: p.name,
@@ -238,8 +226,21 @@ export async function getProductDetail(pk: number, companyId: number) {
     min_stock: p.minStock,
     barcode: p.barcode,
     sku: p.sku,
+    is_active: p.status === 'a',
     images: p.images.map(serializeImage),
   };
+}
+
+function validateUploadedImages(images: UploadedImage[], field = 'images'): void {
+  if (images.length > MAX_PRODUCT_IMAGES) {
+    throw new ValidationError({ [field]: ['Ko‘pi bilan 7 ta rasm yuklash mumkin.'] });
+  }
+  for (const image of images) {
+    if (image.buffer.length > MAX_PRODUCT_IMAGE_SIZE) {
+      throw new ValidationError({ [field]: ['Har bir rasm hajmi 5 MB dan kichik bo‘lishi kerak.'] });
+    }
+    resolveImageExtension(image.buffer);
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -299,9 +300,7 @@ export async function createProduct(
   data: ProductCreateInput,
   images: UploadedImage[],
 ) {
-  if (images.length > MAX_PRODUCT_IMAGES) {
-    throw new ValidationError({ images: ['Max 7 images allowed'] });
-  }
+  validateUploadedImages(images);
 
   // barcode/sku validatsiya (kelmasa null -> avtomatik) — tenant doirasida
   const barcode = await resolveBarcode(data.barcode, companyId);
@@ -355,11 +354,7 @@ export async function createProduct(
     await prisma.productImage.createMany({ data: imageRows });
   }
 
-  const withCategory = await prisma.product.findFirstOrThrow({
-    where: { id: created.id, companyId },
-    include: { category: { select: { name: true } } },
-  });
-  return serializeProductGet(withCategory);
+  return getProductDetail(created.id, companyId);
 }
 
 // ─────────────────────────────────────────────
@@ -374,8 +369,15 @@ export async function updateProduct(
 ) {
   const product = await getProductOr404(pk, companyId);
 
-  if (newImages.length > MAX_PRODUCT_IMAGES) {
-    throw new ValidationError({ new_images: ['Max 7 images allowed'] });
+  validateUploadedImages(newImages, 'new_images');
+  const remainingImageCount = await prisma.productImage.count({
+    where: {
+      productId: pk,
+      ...(data.delete_image_ids?.length ? { id: { notIn: data.delete_image_ids } } : {}),
+    },
+  });
+  if (remainingImageCount + newImages.length > MAX_PRODUCT_IMAGES) {
+    throw new ValidationError({ new_images: ['Mahsulotda jami ko‘pi bilan 7 ta rasm bo‘lishi mumkin.'] });
   }
 
   const updateData: Prisma.ProductUpdateInput = {};
@@ -433,7 +435,7 @@ export async function updateProduct(
     }
   });
 
-  return 'Product successfully updated!';
+  return getProductDetail(pk, companyId);
 }
 
 // ─────────────────────────────────────────────

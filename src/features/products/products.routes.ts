@@ -53,10 +53,10 @@ import { importFromExcel, buildImportTemplate } from './excel.service.js';
 // (images, images[], images[N], new_images shaklidagi kalitlarni ushlaydi)
 // ─────────────────────────────────────────────
 async function parseMultipart(req: FastifyRequest): Promise<{
-  fields: Record<string, string>;
+  fields: Record<string, string | string[]>;
   images: UploadedImage[];
 }> {
-  const fields: Record<string, string> = {};
+  const fields: Record<string, string | string[]> = {};
   const images: UploadedImage[] = [];
 
   const parts = req.parts();
@@ -68,7 +68,11 @@ async function parseMultipart(req: FastifyRequest): Promise<{
         images.push({ filename: part.filename, buffer });
       }
     } else {
-      fields[part.fieldname] = String(part.value);
+      const value = String(part.value);
+      const current = fields[part.fieldname];
+      fields[part.fieldname] = current === undefined
+        ? value
+        : Array.isArray(current) ? [...current, value] : [current, value];
     }
   }
   return { fields, images };
@@ -89,7 +93,9 @@ async function readBody(
     coerceJsonArray(body, ['delete_image_ids']);
     return { body, images };
   }
-  return { body: (req.body as Record<string, unknown>) ?? {}, images: [] };
+  const body = (req.body as Record<string, unknown>) ?? {};
+  coerceNumber(body, ['category', 'brand', 'unit_measurement', 'min_stock']);
+  return { body, images: [] };
 }
 
 // Category uchun: matn maydonlari + bitta `image` fayl (multipart yoki JSON)
@@ -128,14 +134,23 @@ function coerceNumber(obj: Record<string, unknown>, keys: string[]): void {
 
 function coerceJsonArray(obj: Record<string, unknown>, keys: string[]): void {
   for (const k of keys) {
-    if (typeof obj[k] === 'string' && obj[k] !== '') {
+    const raw = obj[k];
+    if (raw === undefined || raw === '') continue;
+    const values = Array.isArray(raw) ? raw : [raw];
+    const parsedValues: unknown[] = [];
+    for (const value of values) {
+      if (typeof value !== 'string') {
+        parsedValues.push(value);
+        continue;
+      }
       try {
-        const parsed = JSON.parse(obj[k] as string);
-        if (Array.isArray(parsed)) obj[k] = parsed.map((v) => Number(v));
+        const parsed = JSON.parse(value);
+        parsedValues.push(...(Array.isArray(parsed) ? parsed : [parsed]));
       } catch {
-        // qoldiramiz — zod xato beradi
+        parsedValues.push(value);
       }
     }
+    obj[k] = parsedValues.map((value) => Number(value));
   }
 }
 
