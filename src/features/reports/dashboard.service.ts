@@ -1,7 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
-import { resolveDashboardRange, type DashboardDateRange } from './dateFilters.js';
+import { addDays, resolveDashboardRange, type DashboardDateRange } from './dateFilters.js';
 import { buildChart } from './chart.service.js';
+import { getSummary } from './summary.service.js';
 
 // ─────────────────────────────────────────────
 //  Dashboard service — Django apps/reports/services/dashboard_service.py
@@ -166,13 +167,42 @@ export async function getRecentSales(storeIds: number[]) {
   }));
 }
 
+// ── Kunlik (bugungi) statistika ──
+// Davr tanlovidan mustaqil: bugun 00:00 → hozir; o'sish — kechagi xuddi shu
+// vaqt oynasiga nisbatan (kecha 00:00 → kecha hozirgi soat). getSummary
+// SQL agregatlarini qayta ishlatadi (tushum/foyda/buyurtma/mijoz).
+export async function getTodayStats(storeIds: number[]) {
+  const now = new Date();
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const prevStart = addDays(todayStart, -1);
+  const prevEnd = addDays(now, -1);
+
+  const [today, yesterday] = await Promise.all([
+    getSummary(todayStart, now, storeIds),
+    getSummary(prevStart, prevEnd, storeIds),
+  ]);
+
+  return {
+    revenue: today.totalRevenue,
+    revenueGrowth: growth(today.totalRevenue, yesterday.totalRevenue),
+    profit: today.totalProfit,
+    profitGrowth: growth(today.totalProfit, yesterday.totalProfit),
+    orders: today.totalOrders,
+    ordersGrowth: growth(today.totalOrders, yesterday.totalOrders),
+    customers: today.totalCustomers,
+    avgReceipt: today.averageOrderValue,
+  };
+}
+
 // ── DashboardAPIView.get facade ──
 // period validatsiyasi view'da bo'ladi; bu yerda barcha bloklar yig'iladi.
 export async function getDashboard(period: string, storeIds: number[]) {
   const dr = resolveDashboardRange(period);
 
-  const [kpi, topParts, lowStock, recentSales, chart] = await Promise.all([
+  const [kpi, today, topParts, lowStock, recentSales, chart] = await Promise.all([
     getDashboardKpi(storeIds, dr),
+    getTodayStats(storeIds),
     getTopParts(storeIds, dr),
     getLowStock(storeIds),
     getRecentSales(storeIds),
@@ -181,6 +211,7 @@ export async function getDashboard(period: string, storeIds: number[]) {
 
   return {
     kpi,
+    today,
     topParts,
     lowStock,
     recentSales,
