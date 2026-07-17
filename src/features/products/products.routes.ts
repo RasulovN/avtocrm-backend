@@ -265,6 +265,7 @@ export async function productsRoutes(app: FastifyInstance) {
       category: q.category ? Number(q.category) : null,
       isActive: q.is_active ?? null,
       archived: q.archived === 'true',
+      lite: q.lite === 'true',
       page,
     });
     return paginate(req, results, count, page);

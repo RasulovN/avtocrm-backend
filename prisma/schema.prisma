@@ -766,6 +766,8 @@ model StockEntry {
   session      PurchaseSession?
 
   @@index([companyId])
+  @@index([supplierId])
+  @@index([storeId])
   @@map("stock_entry")
 }
 
@@ -844,6 +846,8 @@ model SupplierTransaction {
   updatedAt  DateTime    @updatedAt @map("updated_at")
 
   @@index([companyId])
+  @@index([supplierId])
+  @@index([entryId])
   @@map("supplier_transaction")
 }
 
@@ -1051,6 +1055,8 @@ model Sale {
   @@index([companyId])
   @@index([customerId])
   @@index([status])
+  // Hisobotlar: do'kon + sana oralig'i bo'yicha filtrlar (report/chart/dashboard)
+  @@index([storeId, createdAt])
   @@map("sales_sale")
 }
 
@@ -1068,6 +1074,9 @@ model SaleItem {
 
   returnItems SaleReturnItem[]
 
+  // Postgres FK ustunlarini avtomatik indekslamaydi — join/groupBy uchun shart
+  @@index([saleId])
+  @@index([productId])
   @@map("sales_saleitem")
 }
 
@@ -1090,6 +1099,8 @@ model Payment {
 
   @@index([companyId])
   @@index([methodId])
+  @@index([saleId])
+  @@index([createdAt])
   @@map("sales_payment")
 }
 
@@ -1135,6 +1146,7 @@ model SaleReturn {
   items SaleReturnItem[]
 
   @@index([companyId])
+  @@index([saleId])
   @@map("sale_return")
 }
 
@@ -1172,6 +1184,8 @@ model CustomerDebt {
   updatedAt  DateTime  @updatedAt @map("updated_at")
 
   @@index([companyId])
+  @@index([customerId])
+  @@index([saleId])
   @@map("debts_customerdebt")
 }
 

@@ -5,7 +5,7 @@ import {
   SALE_STATUS,
   dec,
   num,
-  getBaseSales,
+  getStoreSalesAggregates,
   getSummary,
 } from './summary.service.js';
 
@@ -62,54 +62,34 @@ export function resolveDates(
 
 // ── BranchService.get ──
 // Har do'kon: revenue=Σ(total_amount-refunded), orders=count, customers=distinct(customer)
-// revenue bo'yicha kamayish tartibi.
+// revenue bo'yicha kamayish tartibi. To'liq SQL GROUP BY (getStoreSalesAggregates).
 export async function getBranchStatistics(
   dateFrom: Date,
   dateTo: Date,
   storeIds: number[],
 ) {
-  const sales = await getBaseSales(dateFrom, dateTo, storeIds);
-
-  interface Acc {
-    storeId: number;
-    storeName: string;
-    revenue: Prisma.Decimal;
-    orders: number;
-    customers: Set<number>;
-  }
-  const map = new Map<number, Acc>();
-  for (const s of sales) {
-    let acc = map.get(s.storeId);
-    if (!acc) {
-      acc = { storeId: s.storeId, storeName: s.storeName, revenue: D0, orders: 0, customers: new Set() };
-      map.set(s.storeId, acc);
-    }
-    acc.revenue = acc.revenue.add(s.totalAmount.sub(s.refunded));
-    acc.orders += 1;
-    if (s.customerId !== null) acc.customers.add(s.customerId);
-  }
-
-  const rows = [...map.values()].map((a) => ({
+  const aggregates = await getStoreSalesAggregates(dateFrom, dateTo, storeIds);
+  return aggregates.map((a) => ({
     store_id: a.storeId,
     store__name: a.storeName,
     revenue: num(a.revenue),
     orders: a.orders,
-    customers: a.customers.size,
-    _rev: a.revenue,
+    customers: a.customers,
   }));
-  rows.sort((a, b) => b._rev.cmp(a._rev));
-  return rows.map(({ _rev, ...r }) => r);
 }
 
 // ── CategoryStatisticsService.get ──
 // SaleItem (status paid/partial) -> product.category.name bo'yicha revenue=Σ(total_price)
 // percent = revenue / total * 100 (1 kasr). revenue bo'yicha kamayish.
+// PERF: SQL GROUP BY (productId) + faqat sotilgan productlarning kategoriya nomlari —
+// barcha SaleItem qatorlarini JS'ga yuklamaymiz.
 export async function getCategoryStatistics(
   dateFrom: Date,
   dateTo: Date,
   storeIds: number[],
 ) {
-  const items = await prisma.saleItem.findMany({
+  const grouped = await prisma.saleItem.groupBy({
+    by: ['productId'],
     where: {
       sale: {
         createdAt: { gte: dateFrom, lte: dateTo },
@@ -117,16 +97,28 @@ export async function getCategoryStatistics(
         storeId: { in: storeIds },
       },
     },
-    select: {
-      totalPrice: true,
-      product: { select: { category: { select: { name: true } } } },
-    },
+    _sum: { totalPrice: true },
   });
 
+  if (grouped.length === 0) return [];
+
+  // Sotilgan productlar -> kategoriya nomi (2 ta yengil so'rov)
+  const products = await prisma.product.findMany({
+    where: { id: { in: grouped.map((g) => g.productId) } },
+    select: { id: true, categoryId: true },
+  });
+  const categoryByProduct = new Map(products.map((p) => [p.id, p.categoryId]));
+  const categoryIds = [...new Set(products.map((p) => p.categoryId).filter((c): c is number => c !== null))];
+  const categories = categoryIds.length
+    ? await prisma.category.findMany({ where: { id: { in: categoryIds } }, select: { id: true, name: true } })
+    : [];
+  const categoryNames = new Map(categories.map((c) => [c.id, c.name]));
+
   const map = new Map<string | null, Prisma.Decimal>();
-  for (const it of items) {
-    const name = it.product.category?.name ?? null;
-    map.set(name, (map.get(name) ?? D0).add(dec(it.totalPrice)));
+  for (const g of grouped) {
+    const categoryId = categoryByProduct.get(g.productId) ?? null;
+    const name = categoryId !== null ? categoryNames.get(categoryId) ?? null : null;
+    map.set(name, (map.get(name) ?? D0).add(dec(g._sum.totalPrice)));
   }
 
   let total = D0;
@@ -217,7 +209,7 @@ export async function getPaymentStructure(
     : [];
   const methodNames = new Map(methods.map((m) => [m.id, m.name]));
 
-  // Qarz — Sale.status='debt' orqali
+  // Qarz — Sale.status='debt' orqali: bitta aggregate (Σtotal - Σpaid), qatorlar yuklanmaydi
   const debtSales = await prisma.sale.aggregate({
     where: {
       createdAt: { gte: dateFrom, lte: dateTo },
@@ -225,17 +217,9 @@ export async function getPaymentStructure(
       storeId: { in: storeIds },
     },
     _count: { _all: true },
+    _sum: { totalAmount: true, paidAmount: true },
   });
-  const debtSaleRows = await prisma.sale.findMany({
-    where: {
-      createdAt: { gte: dateFrom, lte: dateTo },
-      status: SALE_STATUS.DEBT,
-      storeId: { in: storeIds },
-    },
-    select: { totalAmount: true, paidAmount: true },
-  });
-  let debtAmount = D0;
-  for (const s of debtSaleRows) debtAmount = debtAmount.add(dec(s.totalAmount).sub(dec(s.paidAmount)));
+  const debtAmount = dec(debtSales._sum.totalAmount).sub(dec(debtSales._sum.paidAmount));
 
   // type+method bo'yicha yig'ish: naqd hammasi bitta, karta kanal bo'yicha
   interface Acc { count: number; amount: Prisma.Decimal }
@@ -278,81 +262,79 @@ export async function getPaymentStructure(
 // ── DebtService.customer_debts ──
 // CustomerDebt (sale.storeId filtri) -> customer bo'yicha inc(type='i') - dec(type='d')
 // faqat musbat qarzlar.
+// PERF: SQL GROUP BY — har mijozga bitta qator, keyin faqat qarzdor
+// mijozlarning nomi/telefoni olinadi (barcha qarz qatorlari JS'ga yuklanmaydi).
 export async function getCustomerDebts(storeIds: number[]) {
-  const rows = await prisma.customerDebt.findMany({
+  if (storeIds.length === 0) return [];
+
+  const grouped = await prisma.customerDebt.groupBy({
+    by: ['customerId', 'type'],
     where: { sale: { storeId: { in: storeIds } } },
-    select: {
-      amount: true,
-      type: true,
-      customer: { select: { fullName: true, phoneNumber: true } },
-    },
+    _sum: { amount: true },
   });
 
-  interface Acc {
-    customerName: string;
-    phone: string;
-    inc: Prisma.Decimal;
-    dec: Prisma.Decimal;
-  }
-  const map = new Map<string, Acc>();
-  for (const r of rows) {
-    const key = `${r.customer.fullName} ${r.customer.phoneNumber}`;
-    let acc = map.get(key);
-    if (!acc) {
-      acc = { customerName: r.customer.fullName, phone: r.customer.phoneNumber, inc: D0, dec: D0 };
-      map.set(key, acc);
-    }
-    if (r.type === 'i') acc.inc = acc.inc.add(dec(r.amount));
-    else if (r.type === 'd') acc.dec = acc.dec.add(dec(r.amount));
+  const debtByCustomer = new Map<number, Prisma.Decimal>();
+  for (const g of grouped) {
+    const prev = debtByCustomer.get(g.customerId) ?? D0;
+    const amount = dec(g._sum.amount);
+    debtByCustomer.set(g.customerId, g.type === 'i' ? prev.add(amount) : prev.sub(amount));
   }
 
+  const debtorIds = [...debtByCustomer.entries()].filter(([, d]) => d.gt(0)).map(([id]) => id);
+  if (debtorIds.length === 0) return [];
+
+  const customers = await prisma.customer.findMany({
+    where: { id: { in: debtorIds } },
+    select: { id: true, fullName: true, phoneNumber: true },
+  });
+
   const out: Array<{ customerName: string; phone: string; debt: number }> = [];
-  for (const a of map.values()) {
-    const debt = a.inc.sub(a.dec);
-    if (debt.gt(0)) {
-      out.push({ customerName: a.customerName, phone: a.phone, debt: num(debt) });
+  for (const c of customers) {
+    const debt = debtByCustomer.get(c.id);
+    if (debt && debt.gt(0)) {
+      out.push({ customerName: c.fullName, phone: c.phoneNumber, debt: num(debt) });
     }
   }
+  out.sort((a, b) => b.debt - a.debt);
   return out;
 }
 
 // ── DebtService.supplier_debts ──
 // SupplierTransaction (entry.storeId filtri) -> supplier bo'yicha
 // inc(type='in') - dec(type='pay'); faqat musbat qarzlar.
+// PERF: SQL GROUP BY — tranzaksiya qatorlari JS'ga yuklanmaydi.
 export async function getSupplierDebts(storeIds: number[]) {
-  const rows = await prisma.supplierTransaction.findMany({
+  if (storeIds.length === 0) return [];
+
+  const grouped = await prisma.supplierTransaction.groupBy({
+    by: ['supplierId', 'type'],
     where: { entry: { storeId: { in: storeIds } } },
-    select: {
-      amount: true,
-      type: true,
-      supplier: { select: { name: true } },
-    },
+    _sum: { amount: true },
   });
 
-  interface Acc {
-    supplierName: string;
-    inc: Prisma.Decimal;
-    dec: Prisma.Decimal;
-  }
-  const map = new Map<string, Acc>();
-  for (const r of rows) {
-    const key = r.supplier.name;
-    let acc = map.get(key);
-    if (!acc) {
-      acc = { supplierName: r.supplier.name, inc: D0, dec: D0 };
-      map.set(key, acc);
-    }
-    if (r.type === 'in') acc.inc = acc.inc.add(dec(r.amount));
-    else if (r.type === 'pay') acc.dec = acc.dec.add(dec(r.amount));
+  const debtBySupplier = new Map<number, Prisma.Decimal>();
+  for (const g of grouped) {
+    const prev = debtBySupplier.get(g.supplierId) ?? D0;
+    const amount = dec(g._sum.amount);
+    debtBySupplier.set(g.supplierId, g.type === 'in' ? prev.add(amount) : prev.sub(amount));
   }
 
+  const debtorIds = [...debtBySupplier.entries()].filter(([, d]) => d.gt(0)).map(([id]) => id);
+  if (debtorIds.length === 0) return [];
+
+  const suppliers = await prisma.supplier.findMany({
+    where: { id: { in: debtorIds } },
+    select: { id: true, name: true },
+  });
+
   const out: Array<{ supplierName: string; debt: number }> = [];
-  for (const a of map.values()) {
-    const debt = a.inc.sub(a.dec);
-    if (debt.gt(0)) {
-      out.push({ supplierName: a.supplierName, debt: num(debt) });
+  for (const s of suppliers) {
+    const debt = debtBySupplier.get(s.id);
+    if (debt && debt.gt(0)) {
+      out.push({ supplierName: s.name, debt: num(debt) });
     }
   }
+  out.sort((a, b) => b.debt - a.debt);
   return out;
 }
 

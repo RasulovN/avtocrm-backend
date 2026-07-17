@@ -128,6 +128,9 @@ export async function listProducts(opts: {
   category?: number | null;
   isActive?: string | null;
   archived?: boolean;
+  // lite=true — katalog (kirim/transfer dialoglari) uchun yengil javob:
+  // rasmlar yuklanmaydi (katta ro'yxatlarda payload sezilarli kichrayadi)
+  lite?: boolean;
   page: PageParams;
 }) {
   // Tenant-scope: faqat shu company mahsulotlari.
@@ -171,7 +174,8 @@ export async function listProducts(opts: {
         category: { select: { name: true } },
         brand: { select: { name: true } },
         unitMeasurement: { select: { measurement: true } },
-        images: { select: { id: true, image: true } },
+        // lite rejimda rasmlar bo'sh qaytadi (take: 0 — shape o'zgarmaydi)
+        images: { select: { id: true, image: true }, ...(opts.lite ? { take: 0 } : {}) },
         batches: {
           where: { isActive: true },
           include: { location: { select: { location: true } } },
