@@ -398,6 +398,8 @@ export async function importStockEntryFromExcel(opts: {
       store: opts.storeId,
       cash_amount: opts.cashAmount.toFixed(2),
       card_amount: opts.cardAmount.toFixed(2),
+      bank_card: null,
+      note: '',
       items,
     },
   });
@@ -414,17 +416,18 @@ export async function importStockEntryFromExcel(opts: {
 }
 
 // ─────────────────────────────────────────────
-// Do'konni aniqlash: berilsa tekshiriladi, berilmasa yagona asosiy (type='b')
-// do'kon avtomatik tanlanadi (Django _resolve_base_store ekvivalenti).
+// Do'konni aniqlash: berilsa istalgan faol do'kon (ombor yoki savdo do'koni)
+// qabul qilinadi; berilmasa yagona asosiy (type='b') do'kon avtomatik tanlanadi
+// (Django _resolve_base_store ekvivalenti — default faqat auto-tanlashda).
 // ─────────────────────────────────────────────
 export async function resolveEntryStore(companyId: number, storeId?: number | null): Promise<number> {
   if (storeId) {
     const store = await prisma.store.findFirst({
-      where: { id: storeId, companyId, isActive: true, type: 'b' },
+      where: { id: storeId, companyId, isActive: true },
       select: { id: true },
     });
     if (!store) {
-      throw new ValidationError({ detail: "Do'kon topilmadi yoki asosiy (ombor) do'kon emas." });
+      throw new ValidationError({ detail: "Do'kon topilmadi yoki faol emas." });
     }
     return store.id;
   }

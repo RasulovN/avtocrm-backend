@@ -76,7 +76,7 @@ export async function searchProductsByName(productName: string, companyId: numbe
   const where: Prisma.ProductBatchWhereInput = {
     companyId,
     isActive: true,
-    product: { is: { status: 'a' } },
+    product: { is: { status: 'a', archivedAt: null } },
   };
 
   // ACCESS CONTROL: superuser bo'lmasa faqat o'z storelaridagi batchlar
@@ -94,7 +94,7 @@ export async function searchProductsByName(productName: string, companyId: numbe
 
   const query = (productName ?? '').trim();
   if (query) {
-    where.product = { is: { status: 'a', name: { contains: query, mode: 'insensitive' } } };
+    where.product = { is: { status: 'a', archivedAt: null, name: { contains: query, mode: 'insensitive' } } };
   }
 
   // Django: priority (iexact=3, istartswith=2, icontains=1) -> -priority, -created_at; limit 100.
@@ -390,8 +390,8 @@ export async function listSalePanelProducts(opts: {
 }) {
   const selectedStore = await resolveSelectedStore(opts.user, opts.companyId, opts.storeIdParam);
 
-  // Tenant-scope: faqat shu company mahsulotlari
-  const where: Prisma.ProductWhereInput = { companyId: opts.companyId, status: 'a' };
+  // Tenant-scope: faqat shu company mahsulotlari (arxivlanganlar sotuv panelida chiqmaydi)
+  const where: Prisma.ProductWhereInput = { companyId: opts.companyId, status: 'a', archivedAt: null };
   if (opts.search) {
     where.name = { contains: opts.search, mode: 'insensitive' };
   }

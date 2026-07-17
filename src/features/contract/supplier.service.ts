@@ -2,6 +2,7 @@ import type { Prisma, Supplier, SupplierTransaction } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { NotFound, ValidationError } from '../../common/errors.js';
 import { checkValidPhone } from '../../common/validators.js';
+import { mediaUrl } from '../../common/media.js';
 import type { PageParams } from '../../common/pagination.js';
 import type { SupplierCreateInput, SupplierUpdateInput } from './contract.schemas.js';
 
@@ -91,15 +92,48 @@ async function validateInn(companyId: number, inn: string, excludeId?: number): 
 // ─────────────────────────────────────────────
 // List (SupplierListAPIView + _supplier_queryset)
 // ─────────────────────────────────────────────
-export async function listSuppliers(opts: {
+
+// Ruxsat etilgan saralashlar (Django SupplierListAPIView bilan bir xil)
+const ALLOWED_ORDERINGS = new Set(['name', '-total_purchase_amount', '-total_debt', '-created_at']);
+
+// Bir guruh supplier uchun jami xarid va qarz map'larini hisoblaydi
+async function supplierAggregates(supplierIds: number[]) {
+  const purchaseMap = new Map<number, number>();
+  const debtMap = new Map<number, number>();
+  if (!supplierIds.length) return { purchaseMap, debtMap };
+
+  // total_purchase_amount: StockEntry.total_amount yig'indisi (supplier bo'yicha)
+  const purchaseGroups = await prisma.stockEntry.groupBy({
+    by: ['supplierId'],
+    where: { supplierId: { in: supplierIds } },
+    _sum: { totalAmount: true },
+  });
+  for (const g of purchaseGroups) {
+    purchaseMap.set(g.supplierId, Number(g._sum.totalAmount ?? 0));
+  }
+
+  // total_debt: SUM(in) - SUM(pay)
+  const txGroups = await prisma.supplierTransaction.groupBy({
+    by: ['supplierId', 'type'],
+    where: { supplierId: { in: supplierIds } },
+    _sum: { amount: true },
+  });
+  for (const g of txGroups) {
+    const amount = Number(g._sum.amount ?? 0);
+    const prev = debtMap.get(g.supplierId) ?? 0;
+    if (g.type === 'in') debtMap.set(g.supplierId, prev + amount);
+    else if (g.type === 'pay') debtMap.set(g.supplierId, prev - amount);
+  }
+  return { purchaseMap, debtMap };
+}
+
+export function buildSupplierWhere(opts: {
   companyId: number;
   search?: string | null;
   isActive?: string | null;
-  page: PageParams;
-}) {
+}): Prisma.SupplierWhereInput {
   // companyId scope: faqat shu tenant ta'minotchilari.
   const where: Prisma.SupplierWhereInput = { companyId: opts.companyId };
-
   if (opts.search) {
     where.OR = [
       { name: { contains: opts.search, mode: 'insensitive' } },
@@ -110,7 +144,67 @@ export async function listSuppliers(opts: {
   if (opts.isActive !== undefined && opts.isActive !== null) {
     where.isActive = opts.isActive.toLowerCase() === 'true';
   }
+  return where;
+}
 
+// Filtrga mos BARCHA ta'minotchilarni annotatsiyalari bilan qaytaradi
+// (has_debt / aggregate saralash / eksport uchun — pagination JS'da qilinadi).
+export async function listSuppliersAnnotated(opts: {
+  companyId: number;
+  search?: string | null;
+  isActive?: string | null;
+  hasDebt?: boolean;
+  ordering?: string | null;
+}) {
+  const where = buildSupplierWhere(opts);
+  const suppliers = await prisma.supplier.findMany({ where, orderBy: { name: 'asc' } });
+  const { purchaseMap, debtMap } = await supplierAggregates(suppliers.map((s) => s.id));
+
+  let annotated = suppliers.map((s) => ({
+    supplier: s,
+    totalPurchase: purchaseMap.get(s.id) ?? 0,
+    totalDebt: debtMap.get(s.id) ?? 0,
+  }));
+
+  if (opts.hasDebt) {
+    annotated = annotated.filter((row) => row.totalDebt > 0);
+  }
+
+  const ordering = opts.ordering && ALLOWED_ORDERINGS.has(opts.ordering) ? opts.ordering : 'name';
+  if (ordering === '-total_purchase_amount') {
+    annotated.sort((a, b) => b.totalPurchase - a.totalPurchase);
+  } else if (ordering === '-total_debt') {
+    annotated.sort((a, b) => b.totalDebt - a.totalDebt);
+  } else if (ordering === '-created_at') {
+    annotated.sort((a, b) => b.supplier.createdAt.getTime() - a.supplier.createdAt.getTime());
+  }
+  // 'name' — findMany allaqachon nomi bo'yicha saralagan
+
+  return annotated;
+}
+
+export async function listSuppliers(opts: {
+  companyId: number;
+  search?: string | null;
+  isActive?: string | null;
+  hasDebt?: boolean;
+  ordering?: string | null;
+  page: PageParams;
+}) {
+  const needsAnnotatedPath =
+    opts.hasDebt || (opts.ordering && opts.ordering !== 'name' && ALLOWED_ORDERINGS.has(opts.ordering));
+
+  if (needsAnnotatedPath) {
+    // Aggregate bo'yicha saralash/filtr — barcha mos yozuvlar ustida, sahifalash JS'da
+    const annotated = await listSuppliersAnnotated(opts);
+    const pageRows = annotated.slice(opts.page.skip, opts.page.skip + opts.page.take);
+    const results = pageRows.map((row) =>
+      serializeSupplierListRow(row.supplier, row.totalPurchase.toFixed(2), row.totalDebt.toFixed(2)),
+    );
+    return { results, count: annotated.length };
+  }
+
+  const where = buildSupplierWhere(opts);
   const [count, suppliers] = await prisma.$transaction([
     prisma.supplier.count({ where }),
     prisma.supplier.findMany({
@@ -121,40 +215,11 @@ export async function listSuppliers(opts: {
     }),
   ]);
 
-  const supplierIds = suppliers.map((s) => s.id);
-
-  // total_purchase_amount: StockEntry.total_amount yig'indisi (supplier bo'yicha)
-  const purchaseGroups = supplierIds.length
-    ? await prisma.stockEntry.groupBy({
-        by: ['supplierId'],
-        where: { supplierId: { in: supplierIds } },
-        _sum: { totalAmount: true },
-      })
-    : [];
-  const purchaseMap = new Map<number, string>();
-  for (const g of purchaseGroups) {
-    purchaseMap.set(g.supplierId, (g._sum.totalAmount ?? 0).toString());
-  }
-
-  // total_debt: SUM(in) - SUM(pay)
-  const txGroups = supplierIds.length
-    ? await prisma.supplierTransaction.groupBy({
-        by: ['supplierId', 'type'],
-        where: { supplierId: { in: supplierIds } },
-        _sum: { amount: true },
-      })
-    : [];
-  const debtIn = new Map<number, number>();
-  const debtPaid = new Map<number, number>();
-  for (const g of txGroups) {
-    const amount = Number(g._sum.amount ?? 0);
-    if (g.type === 'in') debtIn.set(g.supplierId, amount);
-    else if (g.type === 'pay') debtPaid.set(g.supplierId, amount);
-  }
+  const { purchaseMap, debtMap } = await supplierAggregates(suppliers.map((s) => s.id));
 
   const results = suppliers.map((s) => {
-    const totalPurchase = Number(purchaseMap.get(s.id) ?? 0).toFixed(2);
-    const totalDebt = ((debtIn.get(s.id) ?? 0) - (debtPaid.get(s.id) ?? 0)).toFixed(2);
+    const totalPurchase = (purchaseMap.get(s.id) ?? 0).toFixed(2);
+    const totalDebt = (debtMap.get(s.id) ?? 0).toFixed(2);
     return serializeSupplierListRow(s, totalPurchase, totalDebt);
   });
 
@@ -241,15 +306,21 @@ export async function deleteSupplier(opts: {
 // SupplierPaymentService.make_payment
 // ─────────────────────────────────────────────
 
-// SupplierPaymentListSerializer
-export function serializeSupplierTransaction(t: SupplierTransaction) {
+// SupplierPaymentListSerializer (+ bank_card_name)
+export function serializeSupplierTransaction(
+  t: SupplierTransaction & { bankCard?: { name: string } | null },
+) {
   return {
     id: t.id,
     supplier: t.supplierId,
     entry: t.entryId,
     amount: Number(t.amount).toFixed(2),
     type: t.type,
+    payment_method: t.paymentMethod ?? '',
+    bank_card: t.bankCardId ?? null,
+    bank_card_name: t.bankCard?.name ?? null,
     note: t.note,
+    created_at: t.createdAt,
   };
 }
 
@@ -263,6 +334,7 @@ export async function listEntryTransactions(companyId: number, entryId: number) 
 
   const transactions = await prisma.supplierTransaction.findMany({
     where: { entryId, companyId },
+    include: { bankCard: { select: { name: true } } },
   });
   return transactions.map(serializeSupplierTransaction);
 }
@@ -273,6 +345,8 @@ export async function makePayment(opts: {
   entryId: number;
   amount: string;
   note?: string;
+  paymentType?: 'cash' | 'card';
+  bankCardId?: number | null;
   userFullName: string | null;
 }): Promise<SupplierTransaction> {
   // SupplierPaymentSerializer relation + validation:
@@ -302,6 +376,22 @@ export async function makePayment(opts: {
     throw new ValidationError({ detail: 'Entry supplierga tegishli emas' });
   }
 
+  const paymentType = opts.paymentType ?? 'cash';
+  let bankCardId: number | null = null;
+  if (paymentType === 'card') {
+    // Karta to'lovi — faol PaymentMethod (global katalog) tanlangan bo'lishi shart
+    const card = opts.bankCardId
+      ? await prisma.paymentMethod.findFirst({
+          where: { id: opts.bankCardId, isActive: true },
+          select: { id: true },
+        })
+      : null;
+    if (!card) {
+      throw new ValidationError({ bank_card: ["Karta to'lovi uchun to'lov turini (kartani) tanlang"] });
+    }
+    bankCardId = card.id;
+  }
+
   // make_payment — atomik
   return prisma.$transaction((tx) =>
     tx.supplierTransaction.create({
@@ -311,10 +401,272 @@ export async function makePayment(opts: {
         entryId: opts.entryId,
         amount: opts.amount,
         type: 'pay',
+        paymentMethod: paymentType,
+        bankCardId,
         note:
           opts.note ||
           `Taminotchiga to'lov amalga oshirildi. Mas'ul: ${opts.userFullName ?? ''}`,
       },
     }),
   );
+}
+
+// ─────────────────────────────────────────────
+// SupplierStatsAPIView — detail sahifa dashboardi uchun jamlanma
+// ─────────────────────────────────────────────
+export async function getSupplierStats(companyId: number, supplierId: number) {
+  const supplier = await getSupplierOr404(companyId, supplierId);
+
+  // Eslatma: SupplierTransaction "in" yozuvi faqat QARZ qismini saqlaydi
+  // (kirim paytida darhol to'langani paid_amount'da). Shuning uchun:
+  //   kirim holati:  qarz = total_in(txn) - total_paid(txn),
+  //   to'langan pul = paid_amount + total_paid(txn)
+  const entries = await prisma.stockEntry.findMany({
+    where: { supplierId: supplier.id, companyId },
+    select: { id: true, paidAmount: true, totalAmount: true, createdAt: true },
+  });
+
+  const txGroups = entries.length
+    ? await prisma.supplierTransaction.groupBy({
+        by: ['entryId', 'type'],
+        where: { supplierId: supplier.id, companyId },
+        _sum: { amount: true },
+      })
+    : [];
+  const totalInByEntry = new Map<number, number>();
+  const totalPaidByEntry = new Map<number, number>();
+  for (const g of txGroups) {
+    if (g.entryId == null) continue;
+    const amount = Number(g._sum.amount ?? 0);
+    if (g.type === 'in') totalInByEntry.set(g.entryId, amount);
+    else if (g.type === 'pay') totalPaidByEntry.set(g.entryId, amount);
+  }
+
+  let paidCount = 0;
+  let partialCount = 0;
+  let unpaidCount = 0;
+  let purchaseSum = 0;
+  let paidAtEntrySum = 0;
+  let firstEntryAt: Date | null = null;
+  let lastEntryAt: Date | null = null;
+
+  for (const entry of entries) {
+    const txnIn = totalInByEntry.get(entry.id) ?? 0;
+    const txnPaid = totalPaidByEntry.get(entry.id) ?? 0;
+    const paidAtEntry = Number(entry.paidAmount ?? 0);
+    purchaseSum += Number(entry.totalAmount ?? 0);
+    paidAtEntrySum += paidAtEntry;
+
+    const entryDebt = txnIn - txnPaid;
+    if (entryDebt <= 0) paidCount += 1;
+    else if (paidAtEntry + txnPaid <= 0) unpaidCount += 1;
+    else partialCount += 1;
+
+    if (!firstEntryAt || entry.createdAt < firstEntryAt) firstEntryAt = entry.createdAt;
+    if (!lastEntryAt || entry.createdAt > lastEntryAt) lastEntryAt = entry.createdAt;
+  }
+
+  // Umumiy in/pay yig'indilari (entry'siz tranzaksiyalar ham kiradi)
+  const totals = await prisma.supplierTransaction.groupBy({
+    by: ['type'],
+    where: { supplierId: supplier.id, companyId },
+    _sum: { amount: true },
+  });
+  let txnInTotal = 0;
+  let txnPaidTotal = 0;
+  for (const g of totals) {
+    if (g.type === 'in') txnInTotal = Number(g._sum.amount ?? 0);
+    else if (g.type === 'pay') txnPaidTotal = Number(g._sum.amount ?? 0);
+  }
+
+  // Jami to'langan = kirim paytidagi to'lovlar + keyingi qarz to'lovlari
+  const totalPaid = paidAtEntrySum + txnPaidTotal;
+  const debt = txnInTotal - txnPaidTotal;
+
+  const itemsAgg = await prisma.stockEntryItem.aggregate({
+    where: { entry: { supplierId: supplier.id, companyId } },
+    _sum: { quantity: true },
+  });
+  const itemsTotal = itemsAgg._sum.quantity ?? 0;
+
+  // Kirimlar chastotasi: birinchi kirimdan hozirgacha oyiga o'rtacha nechta kirim
+  let ordersPerMonth = 0;
+  if (entries.length && firstEntryAt) {
+    const days = (Date.now() - firstEntryAt.getTime()) / 86_400_000;
+    const months = Math.max(days / 30.44, 1);
+    ordersPerMonth = Math.round((entries.length / months) * 10) / 10;
+  }
+
+  return {
+    supplier_id: supplier.id,
+    created_at: supplier.createdAt,
+    entries_count: entries.length,
+    paid_entries_count: paidCount,
+    partial_entries_count: partialCount,
+    unpaid_entries_count: unpaidCount,
+    total_purchase_amount: purchaseSum.toFixed(2),
+    total_paid_amount: totalPaid.toFixed(2),
+    total_debt: (debt > 0 ? debt : 0).toFixed(2),
+    // Balans: qarzdan ortiqcha to'langan summa (avans)
+    balance: (debt < 0 ? -debt : 0).toFixed(2),
+    items_total_quantity: itemsTotal,
+    orders_per_month: ordersPerMonth,
+    first_entry_at: firstEntryAt,
+    last_entry_at: lastEntryAt,
+  };
+}
+
+// ─────────────────────────────────────────────
+// SupplierPaymentsBySupplierAPIView — ta'minotchining barcha to'lovlari
+// ─────────────────────────────────────────────
+export async function listSupplierPayments(opts: {
+  companyId: number;
+  supplierId: number;
+  page: PageParams;
+}) {
+  await getSupplierOr404(opts.companyId, opts.supplierId);
+
+  const where: Prisma.SupplierTransactionWhereInput = {
+    companyId: opts.companyId,
+    supplierId: opts.supplierId,
+    type: 'pay',
+  };
+
+  const [count, transactions] = await prisma.$transaction([
+    prisma.supplierTransaction.count({ where }),
+    prisma.supplierTransaction.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: opts.page.skip,
+      take: opts.page.take,
+      include: { bankCard: { select: { name: true } } },
+    }),
+  ]);
+
+  return { results: transactions.map(serializeSupplierTransaction), count };
+}
+
+// ─────────────────────────────────────────────
+// SupplierProductsAPIView — ta'minotchidan kelgan tovarlar (jamlangan)
+// ─────────────────────────────────────────────
+export async function listSupplierProducts(opts: {
+  companyId: number;
+  supplierId: number;
+  search?: string | null;
+  page: PageParams;
+}) {
+  await getSupplierOr404(opts.companyId, opts.supplierId);
+
+  // Ta'minotchi kirimlaridagi barcha itemlar — product bo'yicha JS'da jamlanadi
+  // (Prisma groupBy distinct-count'ni qo'llamaydi; hajm kichik — muammo emas).
+  const itemWhere: Prisma.StockEntryItemWhereInput = {
+    entry: { supplierId: opts.supplierId, companyId: opts.companyId },
+  };
+  if (opts.search) {
+    itemWhere.product = {
+      OR: [
+        { name: { contains: opts.search, mode: 'insensitive' } },
+        { sku: { contains: opts.search, mode: 'insensitive' } },
+        { barcode: { contains: opts.search, mode: 'insensitive' } },
+      ],
+    };
+  }
+
+  const items = await prisma.stockEntryItem.findMany({
+    where: itemWhere,
+    select: {
+      id: true,
+      productId: true,
+      entryId: true,
+      quantity: true,
+      purchasePrice: true,
+      sellingPrice: true,
+      entry: { select: { createdAt: true } },
+    },
+  });
+
+  interface ProductAgg {
+    productId: number;
+    totalQuantity: number;
+    entryIds: Set<number>;
+    lastEntryAt: Date | null;
+    lastItemId: number;
+    lastPurchasePrice: string;
+    lastSellingPrice: string;
+  }
+  const byProduct = new Map<number, ProductAgg>();
+  for (const item of items) {
+    const createdAt = item.entry?.createdAt ?? null;
+    let agg = byProduct.get(item.productId);
+    if (!agg) {
+      agg = {
+        productId: item.productId,
+        totalQuantity: 0,
+        entryIds: new Set(),
+        lastEntryAt: null,
+        lastItemId: -1,
+        lastPurchasePrice: '0',
+        lastSellingPrice: '0',
+      };
+      byProduct.set(item.productId, agg);
+    }
+    agg.totalQuantity += item.quantity;
+    agg.entryIds.add(item.entryId);
+    // Oxirgi kirimdagi narxlar: eng yangi entry.createdAt, teng bo'lsa kattaroq item id
+    const isNewer =
+      !agg.lastEntryAt ||
+      (createdAt !== null &&
+        (createdAt > agg.lastEntryAt ||
+          (createdAt.getTime() === agg.lastEntryAt.getTime() && item.id > agg.lastItemId)));
+    if (isNewer && createdAt !== null) {
+      agg.lastEntryAt = createdAt;
+      agg.lastItemId = item.id;
+      agg.lastPurchasePrice = Number(item.purchasePrice).toFixed(2);
+      agg.lastSellingPrice = Number(item.sellingPrice).toFixed(2);
+    }
+  }
+
+  const sorted = Array.from(byProduct.values()).sort((a, b) => {
+    const at = a.lastEntryAt?.getTime() ?? 0;
+    const bt = b.lastEntryAt?.getTime() ?? 0;
+    return bt - at;
+  });
+
+  const count = sorted.length;
+  const pageRows = sorted.slice(opts.page.skip, opts.page.skip + opts.page.take);
+
+  // Faqat sahifadagi productlar uchun nom/sku/kategoriya/rasm
+  const products = pageRows.length
+    ? await prisma.product.findMany({
+        where: { id: { in: pageRows.map((r) => r.productId) } },
+        select: {
+          id: true,
+          name: true,
+          sku: true,
+          barcode: true,
+          category: { select: { name: true } },
+          images: { select: { image: true }, orderBy: { id: 'asc' }, take: 1 },
+        },
+      })
+    : [];
+  const productMap = new Map(products.map((p) => [p.id, p]));
+
+  const results = pageRows.map((row) => {
+    const product = productMap.get(row.productId);
+    return {
+      product: row.productId,
+      product_name: product?.name ?? null,
+      sku: product?.sku ?? null,
+      barcode: product?.barcode ?? null,
+      category_name: product?.category?.name ?? null,
+      total_quantity: row.totalQuantity,
+      entries_count: row.entryIds.size,
+      last_entry_at: row.lastEntryAt,
+      last_purchase_price: row.lastPurchasePrice,
+      last_selling_price: row.lastSellingPrice,
+      image: mediaUrl(product?.images[0]?.image ?? null),
+    };
+  });
+
+  return { results, count };
 }

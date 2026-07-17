@@ -22,6 +22,7 @@ import {
   resetPasswordSchema,
   customerWriteSchema,
 } from './users.schemas.js';
+import { buildCustomerExportExcel } from '../exports/excelExports.service.js';
 import {
   listUsers,
   getUser,
@@ -334,6 +335,24 @@ export async function usersRoutes(app: FastifyInstance) {
   });
 
   // ===================== Customers (tenant-scoped) =====================
+  // GET customers/export/ — CustomerExportAPIView (.xlsx)
+  app.get(
+    '/customers/export/',
+    { onRequest: [app.requireCompany, app.requirePermission('company.customers.export')] },
+    async (req, reply) => {
+      const companyId = getCompanyId(req);
+      const q = req.query as Record<string, string | undefined>;
+      const buffer = await buildCustomerExportExcel({
+        companyId,
+        search: (q.search ?? '').trim() || null,
+      });
+      return reply
+        .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .header('Content-Disposition', 'attachment; filename="mijozlar.xlsx"')
+        .send(buffer);
+    },
+  );
+
   app.get(
     '/customers/list/',
     { onRequest: [app.requireCompany, app.requirePermission('company.customers.view')] },

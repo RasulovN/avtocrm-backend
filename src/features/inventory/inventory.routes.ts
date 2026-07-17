@@ -21,6 +21,7 @@ import { listLowStock, reconcileLowStock, LOW_STOCK_STATUS } from './lowStock.se
 import { resolveReportStoreIds } from '../reports/storeScope.js';
 import { prisma } from '../../db/prisma.js';
 import { Forbidden } from '../../common/errors.js';
+import { buildInventoryExportExcel } from '../exports/excelExports.service.js';
 
 // Django: apps/inventory/urls.py
 // Prefix '/inventory' modules/index.ts'da registratsiya qilingan.
@@ -40,6 +41,24 @@ async function resolveLowStockStoreIds(req: FastifyRequest, companyId: number, r
 }
 
 export async function inventoryRoutes(app: FastifyInstance) {
+  // ── GET export/ — InventoryExportAPIView (.xlsx, sessiyalar ro'yxati) ──
+  app.get(
+    '/export/',
+    { onRequest: [app.requireCompany, app.requirePermission('company.inventory.export')] },
+    async (req, reply) => {
+      const companyId = getCompanyId(req);
+      const q = req.query as Record<string, string | undefined>;
+      const buffer = await buildInventoryExportExcel({
+        companyId,
+        status: (q.status ?? '').trim() || null,
+      });
+      return reply
+        .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .header('Content-Disposition', 'attachment; filename="inventarizatsiya.xlsx"')
+        .send(buffer);
+    },
+  );
+
   // ── GET list/ — sessiyalar (company scope + inventory.view) ──
   app.get(
     '/list/',
@@ -117,7 +136,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
     async (req) => {
       const companyId = getCompanyId(req);
       const body = inventoryFinalizeSchema.parse(req.body);
-      await finalize({ companyId, sessionId: body.session_id });
+      await finalize({ companyId, sessionId: body.session_id, userId: req.authUser?.id ?? null });
       return { status: 'completed' };
     },
   );

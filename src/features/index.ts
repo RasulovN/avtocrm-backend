@@ -25,6 +25,7 @@ import { salesRoutes } from './sales/sales.routes.js';
 import { debtsRoutes } from './debts/debts.routes.js';
 import { reportsRoutes } from './reports/reports.routes.js';
 import { inventoryRoutes } from './inventory/inventory.routes.js';
+import { writeoffRoutes } from './writeoff/writeoff.routes.js';
 import { leadsRoutes } from './leads/leads.routes.js';
 import { siteSettingsRoutes } from './site-settings/siteSettings.routes.js';
 import { usageRoutes } from './usage/usage.routes.js';
@@ -62,4 +63,5 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(debtsRoutes, { prefix: '/debts' });
   await app.register(reportsRoutes, { prefix: '/reports' });
   await app.register(inventoryRoutes, { prefix: '/inventory' });
+  await app.register(writeoffRoutes, { prefix: '/writeoff' });
 }

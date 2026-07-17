@@ -4,7 +4,7 @@ import { prisma } from '../../db/prisma.js';
 import { NotFound, ValidationError } from '../../common/errors.js';
 import { handleSaleReturn } from '../inventory/inventory.hooks.js';
 import { evaluateLowStock } from '../inventory/lowStock.service.js';
-import type { SaleReturnCreateInput } from './sales.schemas.js';
+import type { RefundPaymentInput, SaleReturnCreateInput } from './sales.schemas.js';
 
 // ─────────────────────────────────────────────
 // Django: apps/sales/services/sale_return_service.py (SaleReturnService.create_return)
@@ -33,6 +33,66 @@ async function getSaleDebt(tx: Tx, saleId: number): Promise<Prisma.Decimal> {
   const inc = increases._sum.amount ?? new Prisma.Decimal(0);
   const dec = decreases._sum.amount ?? new Prisma.Decimal(0);
   return inc.minus(dec);
+}
+
+// ════════════════════════════════════════════
+//  REFUND PAYMENTS (Django SalePaymentService.record_payments + validate_payment_method)
+// ════════════════════════════════════════════
+
+// Qaytarim to'lovlari: jami summa pul bilan qaytarilishi kerak bo'lgan summaga
+// AYNAN teng bo'lishi shart; karta → method (PaymentMethod) majburiy va faol
+// bo'lishi kerak, naqd → method yuborilmasligi kerak.
+async function recordRefundPayments(
+  tx: Tx,
+  opts: {
+    companyId: number;
+    saleId: number;
+    customerId: number | null;
+    payments: RefundPaymentInput[];
+    expectedTotal: Prisma.Decimal;
+  },
+): Promise<void> {
+  const refundTotal = opts.payments.reduce(
+    (sum, p) => sum.plus(new Prisma.Decimal(p.amount)),
+    new Prisma.Decimal(0),
+  );
+  if (!refundTotal.equals(opts.expectedTotal)) {
+    throw new ValidationError({
+      payments: [
+        `Qaytariladigan to'lovlar jami ${refundTotal.toFixed(2)} — ` +
+          `pul bilan qaytarilishi kerak bo'lgan summa ${opts.expectedTotal.toFixed(2)} ga teng bo'lishi shart`,
+      ],
+    });
+  }
+
+  for (const p of opts.payments) {
+    if (p.type === 'card') {
+      if (!p.method) {
+        throw new ValidationError({ method: ["Karta to'lovi uchun to'lov turi (method) majburiy"] });
+      }
+      const method = await tx.paymentMethod.findFirst({
+        where: { id: p.method, isActive: true },
+        select: { id: true },
+      });
+      if (!method) {
+        throw new ValidationError({ method: ['Invalid pk - object does not exist.'] });
+      }
+    } else if (p.method) {
+      throw new ValidationError({ method: ["Naqd to'lovda method yuborilmasligi kerak"] });
+    }
+  }
+
+  await tx.payment.createMany({
+    data: opts.payments.map((p) => ({
+      companyId: opts.companyId,
+      saleId: opts.saleId,
+      customerId: opts.customerId,
+      amount: p.amount,
+      type: p.type,
+      methodId: p.type === 'card' ? p.method ?? null : null,
+      isRefund: true,
+    })),
+  });
 }
 
 // ════════════════════════════════════════════
@@ -163,6 +223,11 @@ export async function createReturn(params: {
     });
 
     // 💰 ACCOUNTING
+    // Avval qaytarim sotuv qarzini kamaytiradi, qolgan qismi mijozga PUL bilan
+    // qaytariladi. Pul qismi sotuvdagi kabi erkin taqsimlanadi (payments[]):
+    // naqd / karta / aralash. payments yuborilmasa — eski xatti-harakat: hammasi naqd.
+    let moneyRefund = totalRefund;
+
     if (customerId) {
       const currentDebt = await getSaleDebt(tx, sale.id);
 
@@ -176,17 +241,32 @@ export async function createReturn(params: {
           });
         }
 
-        const remaining = totalRefund.minus(reduceAmount);
-        if (remaining.greaterThan(0)) {
-          await tx.payment.create({
-            data: { companyId, customerId, saleId: sale.id, amount: remaining, type: 'cash' },
-          });
-        }
-      } else {
-        await tx.payment.create({
-          data: { companyId, customerId, saleId: sale.id, amount: totalRefund, type: 'cash' },
-        });
+        moneyRefund = totalRefund.minus(reduceAmount);
       }
+    }
+
+    const refundPayments = data.payments;
+
+    if (refundPayments && refundPayments.length > 0) {
+      await recordRefundPayments(tx, {
+        companyId,
+        saleId: sale.id,
+        customerId,
+        payments: refundPayments,
+        expectedTotal: moneyRefund,
+      });
+    } else if (customerId && moneyRefund.greaterThan(0)) {
+      // Eski (backward-compatible) xatti-harakat: pul qismi to'liq naqd qaytariladi
+      await tx.payment.create({
+        data: {
+          companyId,
+          customerId,
+          saleId: sale.id,
+          amount: moneyRefund,
+          type: 'cash',
+          isRefund: true,
+        },
+      });
     }
 
     // 📊 SALE STATUS: jami sotilgan == jami qaytarilgan -> 'r' (returned).

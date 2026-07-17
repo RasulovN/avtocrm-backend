@@ -14,6 +14,7 @@ import {
   locationUpdateSchema,
   measurementCreateSchema,
   measurementUpdateSchema,
+  productBulkIdsSchema,
 } from './products.schemas.js';
 import {
   listCategories,
@@ -28,7 +29,12 @@ import {
   getProductDetail,
   createProduct,
   updateProduct,
+  archiveProduct,
+  restoreProduct,
   deleteProduct,
+  bulkArchiveProducts,
+  bulkRestoreProducts,
+  bulkDeleteProducts,
   type UploadedImage,
 } from './product.service.js';
 import {
@@ -47,6 +53,9 @@ import {
   listSalePanelProducts,
 } from './batch.service.js';
 import { importFromExcel, buildImportTemplate } from './excel.service.js';
+import { buildProductExportExcel, buildCategoryExportExcel } from '../exports/excelExports.service.js';
+
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 // ─────────────────────────────────────────────
 // Multipart yordamchi: matn maydonlari + rasm fayllarini ajratadi
@@ -90,11 +99,13 @@ async function readBody(
     }
     // raqamli maydonlarni coerce qilamiz
     coerceNumber(body, ['category', 'brand', 'unit_measurement', 'min_stock']);
+    coerceBoolean(body, ['is_active']);
     coerceJsonArray(body, ['delete_image_ids']);
     return { body, images };
   }
   const body = (req.body as Record<string, unknown>) ?? {};
   coerceNumber(body, ['category', 'brand', 'unit_measurement', 'min_stock']);
+  coerceBoolean(body, ['is_active']);
   return { body, images: [] };
 }
 
@@ -128,6 +139,18 @@ function coerceNumber(obj: Record<string, unknown>, keys: string[]): void {
       if (!Number.isNaN(n)) obj[k] = n;
     } else if (obj[k] === '') {
       delete obj[k];
+    }
+  }
+}
+
+// Multipart'da boolean string bo'lib keladi ("true"/"false") — haqiqiy boolean'ga o'giramiz
+function coerceBoolean(obj: Record<string, unknown>, keys: string[]): void {
+  for (const k of keys) {
+    if (typeof obj[k] === 'string') {
+      const v = (obj[k] as string).toLowerCase();
+      if (v === 'true') obj[k] = true;
+      else if (v === 'false') obj[k] = false;
+      else if (v === '') delete obj[k];
     }
   }
 }
@@ -183,6 +206,20 @@ export async function productsRoutes(app: FastifyInstance) {
     return paginate(req, results, count, page);
   });
 
+  // GET categories/export/ — CategoryExportAPIView (.xlsx)
+  app.get('/categories/export/', guard('company.categories.export'), async (req, reply: FastifyReply) => {
+    const companyId = getCompanyId(req);
+    const q = req.query as Record<string, string | undefined>;
+    const buffer = await buildCategoryExportExcel({
+      companyId,
+      search: (q.search ?? '').trim() || null,
+    });
+    return reply
+      .header('Content-Type', XLSX_MIME)
+      .header('Content-Disposition', 'attachment; filename="kategoriyalar.xlsx"')
+      .send(buffer);
+  });
+
   // POST categories/create/ — CategoryCreateAPIView (201). multipart: `image` fayl
   app.post('/categories/create/', guard('company.categories.create'), async (req, reply) => {
     const companyId = getCompanyId(req);
@@ -217,7 +254,7 @@ export async function productsRoutes(app: FastifyInstance) {
 
   // ═══════════════════════ Product ═══════════════════════
 
-  // GET '' — ProductListAPIView (search, category, is_active, pagination)
+  // GET '' — ProductListAPIView (search, category, is_active, archived, pagination)
   app.get('/', guard('company.products.view'), async (req) => {
     const companyId = getCompanyId(req);
     const q = req.query as Record<string, string | undefined>;
@@ -227,9 +264,25 @@ export async function productsRoutes(app: FastifyInstance) {
       search: (q.search ?? '').trim() || null,
       category: q.category ? Number(q.category) : null,
       isActive: q.is_active ?? null,
+      archived: q.archived === 'true',
       page,
     });
     return paginate(req, results, count, page);
+  });
+
+  // GET export/ — ProductExportAPIView (.xlsx, ro'yxat filtrlari bilan)
+  app.get('/export/', guard('company.products.export'), async (req, reply: FastifyReply) => {
+    const companyId = getCompanyId(req);
+    const q = req.query as Record<string, string | undefined>;
+    const buffer = await buildProductExportExcel({
+      companyId,
+      search: (q.search ?? '').trim() || null,
+      category: q.category ? Number(q.category) : null,
+    });
+    return reply
+      .header('Content-Type', XLSX_MIME)
+      .header('Content-Disposition', 'attachment; filename="mahsulotlar.xlsx"')
+      .send(buffer);
   });
 
   // POST create/ — ProductCreateAPIView (multipart: rasmlar; 201)
@@ -256,12 +309,52 @@ export async function productsRoutes(app: FastifyInstance) {
     return updateProduct(pk, companyId, data, images);
   });
 
-  // DELETE <int:pk>/ — ProductDetailAPIView.delete (204)
+  // DELETE <int:pk>/ — soft-delete (arxivga ko'chirish, 204).
+  // ?permanent=true bo'lsa butunlay o'chiriladi (Restrict-bog'liqlik -> 400).
   app.delete('/:pk/', guard('company.products.delete'), async (req, reply) => {
     const companyId = getCompanyId(req);
     const pk = Number((req.params as { pk: string }).pk);
-    await deleteProduct(pk, companyId);
+    const q = req.query as Record<string, string | undefined>;
+    if (q.permanent === 'true') {
+      await deleteProduct(pk, companyId);
+    } else {
+      await archiveProduct(pk, companyId);
+    }
     return reply.status(204).send();
+  });
+
+  // POST <int:pk>/restore/ — arxivdan tiklash (200)
+  app.post('/:pk/restore/', guard('company.products.update'), async (req) => {
+    const companyId = getCompanyId(req);
+    const pk = Number((req.params as { pk: string }).pk);
+    await restoreProduct(pk, companyId);
+    return { detail: 'Mahsulot arxivdan tiklandi.' };
+  });
+
+  // ═══════════════════════ Bulk amallar (checkbox tanlovi) ═══════════════════════
+
+  // POST bulk/archive/ — tanlanganlarni arxivlash (soft-delete)
+  app.post('/bulk/archive/', guard('company.products.delete'), async (req) => {
+    const companyId = getCompanyId(req);
+    const { ids } = productBulkIdsSchema.parse(req.body);
+    const archived = await bulkArchiveProducts(companyId, ids);
+    return { archived };
+  });
+
+  // POST bulk/restore/ — tanlanganlarni arxivdan tiklash
+  app.post('/bulk/restore/', guard('company.products.update'), async (req) => {
+    const companyId = getCompanyId(req);
+    const { ids } = productBulkIdsSchema.parse(req.body);
+    const restored = await bulkRestoreProducts(companyId, ids);
+    return { restored };
+  });
+
+  // POST bulk/delete/ — tanlanganlarni butunlay o'chirish.
+  // Kirim/sotuvda ishlatilganlar o'chirilmaydi — skipped ro'yxatida qaytadi.
+  app.post('/bulk/delete/', guard('company.products.delete'), async (req) => {
+    const companyId = getCompanyId(req);
+    const { ids } = productBulkIdsSchema.parse(req.body);
+    return bulkDeleteProducts(companyId, ids);
   });
 
   // ═══════════════════════ Batch / sale panel ═══════════════════════

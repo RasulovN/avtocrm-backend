@@ -1,7 +1,8 @@
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { ValidationError, NotFound } from '../../common/errors.js';
 import { evaluateLowStock } from './lowStock.service.js';
+import { recordInventoryShortage } from '../writeoff/writeoff.service.js';
 
 // Django: apps/inventory/services/inventory_service.py (InventoryService)
 //         + inventory_selector.py (InventorySelector)
@@ -155,7 +156,9 @@ export async function scanProduct(params: { companyId: number; sessionId: number
 //   final < 0 -> xato (Negative stock).
 //   diff = final - expected; diff != 0 bo'lsa ProductBatch.quantity = final.
 // Qo'shimcha: diff != 0 uchun InventoryAdjustment yoziladi (difference=diff).
-export async function finalize(params: { companyId: number; sessionId: number }) {
+// Kamomad (diff < 0) uchun avtomatik WriteOff AUDIT yozuvi yaratiladi —
+// stockka tegilmaydi (qoldiq shu yerda allaqachon to'g'rilanadi).
+export async function finalize(params: { companyId: number; sessionId: number; userId?: number | null }) {
   return prisma.$transaction(async (tx) => {
     const session = await tx.inventorySession.findFirst({
       where: { id: params.sessionId, companyId: params.companyId },
@@ -192,6 +195,8 @@ export async function finalize(params: { companyId: number; sessionId: number })
     });
 
     const adjustments: Prisma.InventoryAdjustmentCreateManyInput[] = [];
+    // Kamomad (final < expected) — WriteOff audit yozuvi uchun yig'iladi
+    const shortageQty = new Map<number, number>();
 
     for (const snap of snapshots) {
       const productId = snap.productId;
@@ -220,6 +225,7 @@ export async function finalize(params: { companyId: number; sessionId: number })
           data: { quantity: final },
         });
         adjustments.push({ sessionId: session.id, productId, difference: diff });
+        if (diff < 0) shortageQty.set(productId, -diff);
       }
     }
 
@@ -229,6 +235,32 @@ export async function finalize(params: { companyId: number; sessionId: number })
         store: session.storeId,
         productIds: adjustments.map((item) => item.productId),
         db: tx,
+      });
+    }
+
+    // Kamomad uchun avtomatik spisaniye (record-only, narxlar batchdan)
+    if (shortageQty.size > 0) {
+      const priceBatches = await tx.productBatch.findMany({
+        where: {
+          companyId: params.companyId,
+          storeId: session.storeId,
+          productId: { in: Array.from(shortageQty.keys()) },
+        },
+        select: { productId: true, purchasePrice: true, sellingPrice: true },
+      });
+      const priceMap = new Map(priceBatches.map((b) => [b.productId, b]));
+      await recordInventoryShortage({
+        db: tx,
+        companyId: params.companyId,
+        sessionId: session.id,
+        storeId: session.storeId,
+        userId: params.userId ?? session.startedById,
+        shortages: Array.from(shortageQty.entries()).map(([productId, quantity]) => ({
+          productId,
+          quantity,
+          purchasePrice: priceMap.get(productId)?.purchasePrice ?? new Prisma.Decimal(0),
+          sellingPrice: priceMap.get(productId)?.sellingPrice ?? new Prisma.Decimal(0),
+        })),
       });
     }
 

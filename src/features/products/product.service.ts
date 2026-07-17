@@ -127,10 +127,16 @@ export async function listProducts(opts: {
   search?: string | null;
   category?: number | null;
   isActive?: string | null;
+  archived?: boolean;
   page: PageParams;
 }) {
-  // Tenant-scope: faqat shu company mahsulotlari
-  const where: Prisma.ProductWhereInput = { companyId: opts.companyId, status: 'a' };
+  // Tenant-scope: faqat shu company mahsulotlari.
+  // archived=true — faqat arxivdagilar; aks holda arxivlanmaganlar (faol+nofaol) ko'rinadi,
+  // shunda ro'yxatda nofaol mahsulotni qayta faollashtirish mumkin bo'ladi.
+  const where: Prisma.ProductWhereInput = {
+    companyId: opts.companyId,
+    archivedAt: opts.archived ? { not: null } : null,
+  };
 
   if (opts.category != null) {
     where.categoryId = opts.category;
@@ -194,6 +200,8 @@ export async function listProducts(opts: {
     description: p.description,
     min_stock: p.minStock,
     status: p.status,
+    is_active: p.status === 'a',
+    archived_at: p.archivedAt,
     created_at: p.createdAt,
     images: p.images.map(serializeImage),
     batches: serializeBatchesForStores(p.batches, allStores),
@@ -228,6 +236,7 @@ export async function getProductDetail(pk: number, companyId: number) {
     barcode: p.barcode,
     sku: p.sku,
     is_active: p.status === 'a',
+    archived_at: p.archivedAt,
     images: p.images.map(serializeImage),
   };
 }
@@ -390,6 +399,8 @@ export async function updateProduct(
   if (data.name !== undefined) updateData.name = data.name;
   if (data.description !== undefined) updateData.description = data.description;
   if (data.min_stock !== undefined) updateData.minStock = data.min_stock;
+  // Faol/nofaol holat: is_active -> status ('a'/'i')
+  if (data.is_active !== undefined) updateData.status = data.is_active ? 'a' : 'i';
 
   // kategoriya slug (rasm/shtrix yo'li uchun)
   const categoryId = data.category !== undefined ? data.category : product.categoryId;
@@ -443,21 +454,120 @@ export async function updateProduct(
 }
 
 // ─────────────────────────────────────────────
-// ProductDetailAPIView.delete — ProtectedError -> 400
+// O'chirish (soft-delete) — mahsulot arxivga tushadi, 30 kundan keyin
+// scheduler job butunlay o'chiradi. Arxivdagilar ro'yxat/sotuv panelida chiqmaydi.
+// ─────────────────────────────────────────────
+export async function archiveProduct(pk: number, companyId: number) {
+  const product = await getProductOr404(pk, companyId);
+  if (product.archivedAt) return; // allaqachon arxivda
+  await prisma.product.update({ where: { id: pk }, data: { archivedAt: new Date() } });
+}
+
+// Arxivdan tiklash — archivedAt tozalanadi, status o'z holicha qoladi
+export async function restoreProduct(pk: number, companyId: number) {
+  await getProductOr404(pk, companyId);
+  await prisma.product.update({ where: { id: pk }, data: { archivedAt: null } });
+}
+
+// ─────────────────────────────────────────────
+// Bulk amallar — ro'yxatda checkbox orqali tanlangan mahsulotlar uchun
+// ─────────────────────────────────────────────
+
+// Tanlangan (faol) mahsulotlarni birdaniga arxivlash. Tenant scope: faqat
+// shu company mahsulotlari; allaqachon arxivda bo'lganlar o'tkazib yuboriladi.
+export async function bulkArchiveProducts(companyId: number, ids: number[]): Promise<number> {
+  const result = await prisma.product.updateMany({
+    where: { id: { in: ids }, companyId, archivedAt: null },
+    data: { archivedAt: new Date() },
+  });
+  return result.count;
+}
+
+// Tanlangan mahsulotlarni arxivdan birdaniga tiklash
+export async function bulkRestoreProducts(companyId: number, ids: number[]): Promise<number> {
+  const result = await prisma.product.updateMany({
+    where: { id: { in: ids }, companyId, archivedAt: { not: null } },
+    data: { archivedAt: null },
+  });
+  return result.count;
+}
+
+export interface BulkDeleteResult {
+  deleted: number;
+  // Kirim/sotuvda ishlatilgani uchun o'chirib bo'lmaganlar (arxivlash mumkin)
+  skipped: Array<{ id: number; name: string }>;
+}
+
+// Tanlanganlarni butunlay o'chirish: Restrict-bog'liqligi borlar (kirim/sotuv/
+// qaytarim/transfer/spisaniye) o'chirilmaydi — skipped ro'yxatida qaytariladi.
+export async function bulkDeleteProducts(companyId: number, ids: number[]): Promise<BulkDeleteResult> {
+  const products = await prisma.product.findMany({
+    where: { id: { in: ids }, companyId },
+    select: { id: true, name: true },
+  });
+  const ownIds = products.map((p) => p.id);
+  if (ownIds.length === 0) return { deleted: 0, skipped: [] };
+
+  // Har jadvaldan ishlatilgan productId'lar (distinct) — bitta so'rovdan yig'iladi
+  const [entryUsed, saleUsed, returnUsed, transferUsed, writeOffUsed] = await prisma.$transaction([
+    prisma.stockEntryItem.findMany({
+      where: { productId: { in: ownIds } },
+      select: { productId: true },
+      distinct: ['productId'],
+    }),
+    prisma.saleItem.findMany({
+      where: { productId: { in: ownIds } },
+      select: { productId: true },
+      distinct: ['productId'],
+    }),
+    prisma.saleReturnItem.findMany({
+      where: { productId: { in: ownIds } },
+      select: { productId: true },
+      distinct: ['productId'],
+    }),
+    prisma.stockTransferItem.findMany({
+      where: { productId: { in: ownIds } },
+      select: { productId: true },
+      distinct: ['productId'],
+    }),
+    prisma.writeOffItem.findMany({
+      where: { productId: { in: ownIds } },
+      select: { productId: true },
+      distinct: ['productId'],
+    }),
+  ]);
+  const usedIds = new Set(
+    [...entryUsed, ...saleUsed, ...returnUsed, ...transferUsed, ...writeOffUsed].map((r) => r.productId),
+  );
+
+  const deletableIds = ownIds.filter((id) => !usedIds.has(id));
+  if (deletableIds.length > 0) {
+    await prisma.product.deleteMany({ where: { id: { in: deletableIds }, companyId } });
+  }
+
+  return {
+    deleted: deletableIds.length,
+    skipped: products.filter((p) => usedIds.has(p.id)).map((p) => ({ id: p.id, name: p.name })),
+  };
+}
+
+// ─────────────────────────────────────────────
+// Butunlay o'chirish — ProtectedError -> 400
 // ─────────────────────────────────────────────
 export async function deleteProduct(pk: number, companyId: number) {
   await getProductOr404(pk, companyId);
 
   // Restrict-bog'liqlik tekshiruvi (StockEntryItem, SaleItem, va h.k. -> onDelete: Restrict)
-  const [entryUsed, saleUsed, returnUsed, transferUsed] = await prisma.$transaction([
+  const [entryUsed, saleUsed, returnUsed, transferUsed, writeOffUsed] = await prisma.$transaction([
     prisma.stockEntryItem.findFirst({ where: { productId: pk }, select: { id: true } }),
     prisma.saleItem.findFirst({ where: { productId: pk }, select: { id: true } }),
     prisma.saleReturnItem.findFirst({ where: { productId: pk }, select: { id: true } }),
     prisma.stockTransferItem.findFirst({ where: { productId: pk }, select: { id: true } }),
+    prisma.writeOffItem.findFirst({ where: { productId: pk }, select: { id: true } }),
   ]);
-  if (entryUsed || saleUsed || returnUsed || transferUsed) {
+  if (entryUsed || saleUsed || returnUsed || transferUsed || writeOffUsed) {
     throw new ValidationError(
-      "Bu mahsulotni o'chirib bo'lmaydi, chunki u allaqachon tizimda ishlatilgan (kirim/sotuv mavjud).",
+      "Bu mahsulotni butunlay o'chirib bo'lmaydi, chunki u allaqachon tizimda ishlatilgan (kirim/sotuv mavjud). Uni arxivlash mumkin.",
     );
   }
 

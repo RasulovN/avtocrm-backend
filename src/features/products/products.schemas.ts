@@ -72,6 +72,8 @@ export const productUpdateSchema = z.object({
   min_stock: z.number().int().min(0).optional(),
   barcode: z.string().max(13).nullable().optional(),
   sku: z.string().max(64).nullable().optional(),
+  // Faol/nofaol holat (status 'a'/'i' ga o'giriladi)
+  is_active: z.boolean().optional(),
   delete_image_ids: z.array(z.number().int()).optional(),
 });
 
@@ -126,6 +128,13 @@ export const measurementUpdateSchema = z.object({
   measurement_ru: z.string().max(50).nullable().optional(),
   measurement_en: z.string().max(50).nullable().optional(),
 });
+
+// Bulk amallar (arxivlash / tiklash / butunlay o'chirish) uchun id ro'yxati
+export const productBulkIdsSchema = z.object({
+  ids: z.array(z.number().int().positive()).min(1).max(500),
+});
+
+export type ProductBulkIdsInput = z.infer<typeof productBulkIdsSchema>;
 
 export type CategoryCreateInput = z.infer<typeof categoryCreateSchema>;
 export type CategoryUpdateInput = z.infer<typeof categoryUpdateSchema>;

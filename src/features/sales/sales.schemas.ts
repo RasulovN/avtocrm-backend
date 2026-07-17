@@ -77,11 +77,25 @@ const saleReturnItemInputSchema = z.object({
   quantity: z.number().int(),
 });
 
-// Django SaleReturnCreateSerializer: sale = IntegerField, items (many), comment (opt, blank)
+// Qaytarim to'lovi (mijozga pul qaytarish): naqd/karta; karta bo'lsa method
+// (PaymentMethod.id) majburiy, naqdda esa yuborilmasligi kerak — Django
+// validate_payment_method bilan bir xil qoida (service qatlamida tekshiriladi).
+const refundPaymentInputSchema = z.object({
+  type: z.enum(['cash', 'card']),
+  amount: decimalString.refine((v) => Number(v) > 0, {
+    message: "To'lov ijoboy bo'lishi kerak",
+  }),
+  method: z.number().int().nullable().optional(),
+});
+
+// Django SaleReturnCreateSerializer: sale = IntegerField, items (many), comment (opt, blank),
+// payments (opt) — pul qaytarish taqsimoti (naqd/karta/aralash). Yuborilmasa — hammasi naqd.
 export const saleReturnCreateSchema = z.object({
   sale: z.number().int(),
   items: z.array(saleReturnItemInputSchema),
   comment: z.string().optional(),
+  payments: z.array(refundPaymentInputSchema).optional(),
 });
 
 export type SaleReturnCreateInput = z.infer<typeof saleReturnCreateSchema>;
+export type RefundPaymentInput = z.infer<typeof refundPaymentInputSchema>;

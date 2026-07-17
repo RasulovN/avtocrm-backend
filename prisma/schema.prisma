@@ -70,6 +70,7 @@ model Company {
   productUnitMeasurements ProductUnitMeasurement[]
   productBatches          ProductBatch[]
   stockEntries            StockEntry[]
+  purchaseSessions        PurchaseSession[]
   supplierTransactions    SupplierTransaction[]
   inventorySessions       InventorySession[]
   lowStockItems           LowStockItem[]
@@ -82,6 +83,7 @@ model Company {
   announcements           Announcement[]
   auditLogs               AuditLog[]
   usageDaily              UsageDaily[]
+  writeOffs               WriteOff[]
 
   @@index([categoryId])
   @@index([status])
@@ -429,6 +431,7 @@ model User {
   storeLinks           StoreUser[]         @relation("UserStoreLinks")
   history              UserHistory[]
   stockEntries         StockEntry[]
+  purchaseSessions     PurchaseSession[]
   inventorySessions    InventorySession[]
   sales                Sale[]
   saleReturns          SaleReturn[]
@@ -440,6 +443,7 @@ model User {
   supportConversation  SupportConversation?
   supportMessages      SupportMessage[]
   usageDaily           UsageDaily[]
+  writeOffs            WriteOff[]
 
   @@index([phoneNumber])
   @@index([email])
@@ -504,6 +508,7 @@ model Store {
   userLinks          StoreUser[]         @relation("StoreUserLinks")
   productBatches     ProductBatch[]
   stockEntries       StockEntry[]
+  purchaseSessions   PurchaseSession[]
   inventorySessions  InventorySession[]
   inventorySnapshots InventorySnapshot[]
   sales              Sale[]
@@ -511,6 +516,7 @@ model Store {
   outgoingTransfers  StockTransfer[]     @relation("OutgoingTransfers")
   incomingTransfers  StockTransfer[]     @relation("IncomingTransfers")
   lowStockItems      LowStockItem[]
+  writeOffs          WriteOff[]
 
   @@index([companyId])
   @@index([phoneNumber])
@@ -600,6 +606,9 @@ model Product {
   status   String @default("a") @db.VarChar(20) // a=Active, i=Inactive, d=Draft
   minStock Int    @default(0) @map("min_stock")
 
+  // Soft-delete (arxiv): to'ldirilgan bo'lsa mahsulot arxivda; 30 kundan keyin job butunlay o'chiradi
+  archivedAt DateTime? @map("archived_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -614,6 +623,7 @@ model Product {
   saleItems            SaleItem[]
   saleReturnItems      SaleReturnItem[]
   transferItems        StockTransferItem[]
+  writeOffItems        WriteOffItem[]
 
   @@unique([companyId, sku])
   @@unique([companyId, barcode])
@@ -621,6 +631,7 @@ model Product {
   @@index([sku])
   @@index([barcode])
   @@index([name])
+  @@index([archivedAt])
   @@map("product")
 }
 
@@ -714,8 +725,9 @@ model Supplier {
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
-  entries      StockEntry[]
-  transactions SupplierTransaction[]
+  entries          StockEntry[]
+  transactions     SupplierTransaction[]
+  purchaseSessions PurchaseSession[]
 
   @@unique([companyId, inn])
   @@index([companyId])
@@ -738,6 +750,12 @@ model StockEntry {
   paidAmount  Decimal  @default(0) @map("paid_amount") @db.Decimal(15, 2)
   debtAmount  Decimal  @default(0) @map("debt_amount") @db.Decimal(15, 2)
   paymentType String   @default("cash") @map("payment_type") @db.VarChar(7) // cash/card/mixed
+  // card_amount > 0 bo'lganda qaysi to'lov turi (PaymentMethod katalogi) ishlatilgani.
+  // Restrict — kirimlari bor usulni o'chirib bo'lmaydi (soft delete: is_active=false).
+  bankCardId  Int?     @map("bank_card_id")
+  bankCard    PaymentMethod? @relation("StockEntryBankCard", fields: [bankCardId], references: [id], onDelete: Restrict)
+  // Ixtiyoriy izoh/tavsif (kirim yaratishda kiritiladi)
+  note        String   @default("")
   createdById Int?     @map("created_by_id")
   createdBy   User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now()) @map("created_at")
@@ -745,9 +763,51 @@ model StockEntry {
 
   items        StockEntryItem[]
   transactions SupplierTransaction[]
+  session      PurchaseSession?
 
   @@index([companyId])
   @@map("stock_entry")
+}
+
+// Progressiv kirim (xarid) sessiyasi — wizard qoralamasi.
+// Oqim: in_progress → received (qabul qilingan, tasdiqlanmagan) → completed / cancelled.
+// Sessiya omborga/qarzga TA'SIR QILMAYDI — faqat confirm bosqichida createEntry chaqiriladi.
+model PurchaseSession {
+  id         Int      @id @default(autoincrement())
+  companyId  Int      @map("company_id")
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplierId Int      @map("supplier_id")
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  storeId    Int      @map("store_id")
+  store      Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  // [{product, product_name, quantity, purchase_price, selling_price, wholesale_price}, ...]
+  items Json @default("[]")
+
+  cashAmount Decimal        @default(0) @map("cash_amount") @db.Decimal(15, 2)
+  cardAmount Decimal        @default(0) @map("card_amount") @db.Decimal(15, 2)
+  bankCardId Int?           @map("bank_card_id")
+  bankCard   PaymentMethod? @relation("PurchaseSessionBankCard", fields: [bankCardId], references: [id], onDelete: SetNull)
+  // Ixtiyoriy izoh — confirm bosqichida StockEntry.note ga ko'chadi
+  note       String         @default("")
+
+  status      String @default("in_progress") @db.VarChar(12) // in_progress/received/completed/cancelled
+  // Wizard qaysi bosqichda qolgani (1 — ta'minotchi/do'kon, 2 — mahsulotlar, 3 — to'lov)
+  currentStep Int    @default(1) @map("current_step") @db.SmallInt
+
+  createdById Int  @map("created_by_id")
+  createdBy   User @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  // Tasdiqlangandan keyin yaratilgan haqiqiy kirim
+  entryId Int?        @unique @map("entry_id")
+  entry   StockEntry? @relation(fields: [entryId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([companyId])
+  @@index([createdById, status])
+  @@map("purchase_session")
 }
 
 model StockEntryItem {
@@ -774,6 +834,11 @@ model SupplierTransaction {
   entry      StockEntry? @relation(fields: [entryId], references: [id], onDelete: SetNull)
   amount     Decimal     @db.Decimal(15, 2)
   type       String      @db.VarChar(5) // in / pay
+  // To'lov usuli (faqat type=pay uchun ma'noli): cash yoki card
+  paymentMethod String @default("") @map("payment_method") @db.VarChar(5)
+  // Karta to'lovida qaysi to'lov turi (PaymentMethod katalogi) ishlatilgani
+  bankCardId Int?           @map("bank_card_id")
+  bankCard   PaymentMethod? @relation("SupplierTransactionBankCard", fields: [bankCardId], references: [id], onDelete: SetNull)
   note       String      @default("")
   createdAt  DateTime    @default(now()) @map("created_at")
   updatedAt  DateTime    @updatedAt @map("updated_at")
@@ -804,10 +869,69 @@ model InventorySession {
   counts      InventoryCount[]
   movements   InventoryMovement[]
   adjustments InventoryAdjustment[]
+  writeOffs   WriteOff[]
 
   @@index([companyId])
   @@index([storeId, status])
   @@map("inventory_session")
+}
+
+// ============================================================
+//  WRITE-OFF (spisaniye / hisobdan chiqarish)
+// ============================================================
+
+// Mahsulotni hisobdan chiqarish: buzilgan, muddati o'tgan, yo'qolgan,
+// katalogdan chiqarilgan yoki inventarizatsiya kamomadi. Stock (ProductBatch.quantity)
+// writeoff service ichida kamaytiriladi; inventarizatsiya kamomadi esa faqat
+// audit yozuvi (stock finalize'da allaqachon to'g'rilangan).
+model WriteOff {
+  id        Int     @id @default(autoincrement())
+  companyId Int     @map("company_id")
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  storeId   Int     @map("store_id")
+  store     Store   @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  // damaged | expired | lost | inventory | catalog | other
+  reason  String @default("other") @db.VarChar(20)
+  comment String @default("")
+
+  // items bo'yicha tannarx yig'indisi (zarar summasi)
+  totalAmount Decimal @default(0) @map("total_amount") @db.Decimal(15, 2)
+
+  createdById Int?  @map("created_by_id")
+  createdBy   User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  // Inventarizatsiyadan avtomatik yaratilgan bo'lsa — qaysi sessiyadan
+  inventorySessionId Int?              @map("inventory_session_id")
+  inventorySession   InventorySession? @relation(fields: [inventorySessionId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  items WriteOffItem[]
+
+  @@index([companyId])
+  @@index([storeId, reason])
+  @@index([createdAt])
+  @@map("write_off")
+}
+
+model WriteOffItem {
+  id         Int      @id @default(autoincrement())
+  writeOffId Int      @map("write_off_id")
+  writeOff   WriteOff @relation(fields: [writeOffId], references: [id], onDelete: Cascade)
+  productId  Int      @map("product_id")
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  quantity Int
+
+  // Hisobdan chiqarilgan paytdagi narxlar (batchdan olinadi) — tarix uchun
+  purchasePrice Decimal @map("purchase_price") @db.Decimal(12, 2)
+  sellingPrice  Decimal @map("selling_price") @db.Decimal(12, 2)
+
+  @@index([writeOffId])
+  @@index([productId])
+  @@map("write_off_item")
 }
 
 model InventorySnapshot {
@@ -959,6 +1083,8 @@ model Payment {
   type       String         @db.VarChar(5) // cash/card
   methodId   Int?           @map("method_id") // karta to'lovi kanali (Uzcard/Humo/Payme/...)
   method     PaymentMethod? @relation(fields: [methodId], references: [id], onDelete: SetNull)
+  // Mijozga qaytarilgan pul (sale return oqimi) — hisobotlarda NET hisoblash uchun
+  isRefund   Boolean        @default(false) @map("is_refund")
   createdAt  DateTime       @default(now()) @map("created_at")
   updatedAt  DateTime       @updatedAt @map("updated_at")
 
@@ -980,7 +1106,10 @@ model PaymentMethod {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  payments Payment[]
+  payments             Payment[]
+  stockEntries         StockEntry[]          @relation("StockEntryBankCard")
+  purchaseSessions     PurchaseSession[]     @relation("PurchaseSessionBankCard")
+  supplierTransactions SupplierTransaction[] @relation("SupplierTransactionBankCard")
 
   @@index([isActive, sortOrder])
   @@map("payment_method")

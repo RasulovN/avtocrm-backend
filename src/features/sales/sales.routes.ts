@@ -5,6 +5,7 @@ import { saleCreateSchema, saleReturnCreateSchema } from './sales.schemas.js';
 import { createSale, listSales, getSale } from './sale.service.js';
 import { createReturn, listReturns } from './saleReturn.service.js';
 import { getDebtorCustomers } from './debtorCustomer.service.js';
+import { buildSaleExportExcel } from '../exports/excelExports.service.js';
 
 // Django: apps/sales/urls.py (prefix '/sales' index.ts'da).
 //   list/                 -> SaleListAPIView         (GET)
@@ -45,6 +46,28 @@ export async function salesRoutes(app: FastifyInstance) {
         page,
       });
       return paginate(req, results, count, page);
+    },
+  );
+
+  // ── GET export/ — SaleExportAPIView (.xlsx, ro'yxat filtrlari bilan) ──
+  app.get(
+    '/export/',
+    { onRequest: [app.requireCompany, app.requirePermission('company.sales.export')] },
+    async (req, reply) => {
+      const companyId = getCompanyId(req);
+      const q = req.query as Record<string, string | undefined>;
+      const buffer = await buildSaleExportExcel({
+        companyId,
+        user: req.authUser!,
+        store: q.store ? Number(q.store) : null,
+        status: (q.status ?? '').trim() || null,
+        dateFrom: q.date_from ?? null,
+        dateTo: q.date_to ?? null,
+      });
+      return reply
+        .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .header('Content-Disposition', 'attachment; filename="sotuvlar.xlsx"')
+        .send(buffer);
     },
   );
 

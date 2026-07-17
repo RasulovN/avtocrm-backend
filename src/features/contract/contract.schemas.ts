@@ -91,6 +91,11 @@ export const stockEntryCreateSchema = z
     store: z.number().int(),
     cash_amount: decimalLike.default('0'),
     card_amount: decimalLike.default('0'),
+    // Karta to'lovida qaysi to'lov turi (PaymentMethod katalogi) ishlatilgani.
+    // Ixtiyoriy (eski klientlar va Excel import uchun).
+    bank_card: z.number().int().nullable().optional().default(null),
+    // Ixtiyoriy izoh/tavsif
+    note: z.string().max(1000).optional().default(''),
     items: z.array(stockEntryItemSchema),
   })
   .superRefine((data, ctx) => {
@@ -119,11 +124,63 @@ export const stockEntryCreateSchema = z
 // Supplier payment (transaction)
 // ─────────────────────────────────────────────
 
-export const supplierPaymentSchema = z.object({
+export const supplierPaymentSchema = z
+  .object({
+    supplier: z.number().int(),
+    entry: z.number().int(),
+    amount: decimalLike,
+    note: z.string().optional(),
+    // To'lov usuli: naqd (default) yoki karta; karta bo'lsa bank_card majburiy
+    payment_type: z.enum(['cash', 'card']).optional().default('cash'),
+    bank_card: z.number().int().nullable().optional().default(null),
+  })
+  .superRefine((data, ctx) => {
+    if (data.payment_type === 'card' && !data.bank_card) {
+      ctx.addIssue({
+        code: 'custom',
+        message: "Karta to'lovi uchun to'lov turini (kartani) tanlang",
+        path: ['bank_card'],
+      });
+    }
+  });
+
+// ─────────────────────────────────────────────
+// Purchase session (progressiv kirim wizard'i)
+// ─────────────────────────────────────────────
+
+// Draft bosqichida qiymatlar to'liq bo'lmasligi mumkin (masalan narx 0) —
+// bu yerda faqat tip/format tekshiriladi, to'liq biznes validatsiya
+// receive/confirm bosqichlarida bajariladi.
+const purchaseSessionItemSchema = z.object({
+  product: z.number().int().nullable().optional().default(null),
+  product_name: z.string().optional().default(''),
+  quantity: decimalLike.default('0'),
+  purchase_price: decimalLike.default('0'),
+  selling_price: decimalLike.default('0'),
+  wholesale_price: decimalLike.default('0'),
+});
+
+export const purchaseSessionCreateSchema = z.object({
   supplier: z.number().int(),
-  entry: z.number().int(),
-  amount: decimalLike,
-  note: z.string().optional(),
+  store: z.number().int(),
+  items: z.array(purchaseSessionItemSchema).optional().default([]),
+  cash_amount: decimalLike.default('0'),
+  card_amount: decimalLike.default('0'),
+  bank_card: z.number().int().nullable().optional().default(null),
+  note: z.string().max(1000).optional().default(''),
+  current_step: z.number().int().min(1).max(3).optional().default(1),
+});
+
+// PATCH — qisman yangilash (avto-saqlash)
+export const purchaseSessionUpdateSchema = z.object({
+  supplier: z.number().int().optional(),
+  store: z.number().int().optional(),
+  items: z.array(purchaseSessionItemSchema).optional(),
+  cash_amount: decimalLike.optional(),
+  card_amount: decimalLike.optional(),
+  bank_card: z.number().int().nullable().optional(),
+  note: z.string().max(1000).optional(),
+  current_step: z.number().int().min(1).max(3).optional(),
 });
 
 export type SupplierCreateInput = z.infer<typeof supplierCreateSchema>;
@@ -131,3 +188,6 @@ export type SupplierUpdateInput = z.infer<typeof supplierUpdateSchema>;
 export type StockEntryCreateInput = z.infer<typeof stockEntryCreateSchema>;
 export type StockEntryItemInput = z.infer<typeof stockEntryItemSchema>;
 export type SupplierPaymentInput = z.infer<typeof supplierPaymentSchema>;
+export type PurchaseSessionItemInput = z.infer<typeof purchaseSessionItemSchema>;
+export type PurchaseSessionCreateInput = z.infer<typeof purchaseSessionCreateSchema>;
+export type PurchaseSessionUpdateInput = z.infer<typeof purchaseSessionUpdateSchema>;

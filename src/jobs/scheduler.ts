@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { runNotificationLifecycle } from './notificationLifecycle.js';
 import { runAuditLogLifecycle } from './auditLogLifecycle.js';
+import { runProductArchiveLifecycle } from './productArchiveLifecycle.js';
 
 const TWELVE_HOURS = 12 * 60 * 60 * 1000;
 
@@ -32,6 +33,18 @@ async function tick(app: FastifyInstance): Promise<void> {
     }
   } catch (err) {
     app.log.error({ err }, 'Audit log lifecycle job xatosi');
+  }
+
+  try {
+    const res = await runProductArchiveLifecycle();
+    if (res.deleted || res.skipped) {
+      app.log.info(
+        { productArchiveLifecycle: res },
+        `Mahsulot arxivi: butunlay o'chirildi=${res.deleted}, o'tkazib yuborildi=${res.skipped}`,
+      );
+    }
+  } catch (err) {
+    app.log.error({ err }, 'Mahsulot arxivi lifecycle job xatosi');
   } finally {
     running = false;
   }

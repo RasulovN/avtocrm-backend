@@ -43,15 +43,15 @@ export function calculatePaymentFields(
 // ─────────────────────────────────────────────
 // StockEntryService.create_entry
 // ─────────────────────────────────────────────
-export async function createEntry(opts: {
-  companyId: number;
-  data: StockEntryCreateInput;
-  userId: number;
-}): Promise<StockEntry> {
-  const { data, companyId } = opts;
 
-  // StockEntryCreateSerializer relation validatsiyasi (barchasi tenant doirasida):
-  //   supplier active; store active + type="b"; items mavjud; products active.
+// StockEntryCreateSerializer relation validatsiyasi (barchasi tenant doirasida):
+//   supplier active; store active (ombor ham, savdo do'koni ham — Django'dagi kabi
+//   istalgan faol do'konga kirim qilish mumkin); products active.
+// Purchase session receive/confirm bosqichlarida ham xuddi shu tekshiruv ishlaydi.
+export async function validateEntryRelations(
+  companyId: number,
+  data: Pick<StockEntryCreateInput, 'supplier' | 'store' | 'items'>,
+): Promise<void> {
   const supplier = await prisma.supplier.findFirst({
     where: { id: data.supplier, companyId, isActive: true },
     select: { id: true },
@@ -61,7 +61,7 @@ export async function createEntry(opts: {
   }
 
   const store = await prisma.store.findFirst({
-    where: { id: data.store, companyId, isActive: true, type: 'b' },
+    where: { id: data.store, companyId, isActive: true },
     select: { id: true },
   });
   if (!store) {
@@ -79,6 +79,18 @@ export async function createEntry(opts: {
       throw new ValidationError({ items: [{ product: ['Invalid pk - object does not exist.'] }] });
     }
   }
+}
+
+export async function createEntry(opts: {
+  companyId: number;
+  data: StockEntryCreateInput;
+  userId: number;
+}): Promise<StockEntry> {
+  const { data, companyId } = opts;
+
+  await validateEntryRelations(companyId, data);
+
+  const productIds = data.items.map((i) => i.product);
 
   const totalEntryAmount = data.items.reduce(
     (acc, item) => acc + Number(item.purchase_price) * item.quantity,
@@ -87,6 +99,20 @@ export async function createEntry(opts: {
 
   const cashAmount = Number(data.cash_amount);
   const cardAmount = Number(data.card_amount);
+
+  // bank_card (PaymentMethod katalogi) — berilgan bo'lsa faol bo'lishi shart.
+  // Ixtiyoriy: eski klientlar va Excel import bank_card yubormaydi.
+  let bankCardId: number | null = null;
+  if (data.bank_card) {
+    const card = await prisma.paymentMethod.findFirst({
+      where: { id: data.bank_card, isActive: true },
+      select: { id: true },
+    });
+    if (!card) {
+      throw new ValidationError({ bank_card: ['Invalid pk - object does not exist.'] });
+    }
+    bankCardId = card.id;
+  }
 
   // calculate_payment_fields — create'dan oldin
   const payment = calculatePaymentFields(totalEntryAmount, cashAmount, cardAmount);
@@ -103,6 +129,8 @@ export async function createEntry(opts: {
         paidAmount: payment.paidAmount.toFixed(2),
         debtAmount: payment.debtAmount.toFixed(2),
         paymentType: payment.paymentType,
+        bankCardId,
+        note: data.note ?? '',
         createdById: opts.userId,
       },
     });
@@ -197,11 +225,12 @@ function serializeStockEntryItem(item: {
   quantity: number;
   purchasePrice: Prisma.Decimal;
   sellingPrice: Prisma.Decimal;
-  product: { sku: string | null; barcode: string | null; shtrixCode: string | null } | null;
+  product: { name: string | null; sku: string | null; barcode: string | null; shtrixCode: string | null } | null;
 }) {
   return {
     id: item.id,
     product: item.productId,
+    product_name: item.product?.name ?? null,
     quantity: item.quantity,
     purchase_price: Number(item.purchasePrice).toFixed(2),
     selling_price: Number(item.sellingPrice).toFixed(2),
@@ -211,16 +240,47 @@ function serializeStockEntryItem(item: {
   };
 }
 
-export async function listStockEntries(opts: {
+export type StockEntryPaymentStatus = 'unpaid' | 'partial' | 'paid';
+
+// Kirim to'lov holati (Django StockEntryFilter.filter_payment_status bilan bir xil):
+// "in" tranzaksiyasi faqat qarz qismini saqlaydi — kirim paytida to'langani paidAmount'da.
+function entryPaymentStatus(
+  totalIn: number,
+  totalPaid: number,
+  paidAmount: number,
+): StockEntryPaymentStatus {
+  if (totalPaid >= totalIn) return 'paid';
+  if (totalPaid <= 0 && paidAmount <= 0) return 'unpaid';
+  return 'partial';
+}
+
+// entry to'plami uchun total_in/total_paid map'lari
+async function entryTxSums(entryIds: number[]) {
+  const totalIn = new Map<number, number>();
+  const totalPaid = new Map<number, number>();
+  if (!entryIds.length) return { totalIn, totalPaid };
+  const txGroups = await prisma.supplierTransaction.groupBy({
+    by: ['entryId', 'type'],
+    where: { entryId: { in: entryIds } },
+    _sum: { amount: true },
+  });
+  for (const g of txGroups) {
+    if (g.entryId == null) continue;
+    const amount = Number(g._sum.amount ?? 0);
+    if (g.type === 'in') totalIn.set(g.entryId, amount);
+    else if (g.type === 'pay') totalPaid.set(g.entryId, amount);
+  }
+  return { totalIn, totalPaid };
+}
+
+export function buildStockEntryWhere(opts: {
   companyId: number;
   search?: string | null;
   supplier?: number | null;
   store?: number | null;
   dateFrom?: string | null;
   dateTo?: string | null;
-  ordering?: string | null;
-  page: PageParams;
-}) {
+}): Prisma.StockEntryWhereInput {
   // companyId scope: faqat shu tenant kirimlari.
   const where: Prisma.StockEntryWhereInput = { companyId: opts.companyId };
 
@@ -235,6 +295,21 @@ export async function listStockEntries(opts: {
     if (opts.dateTo) createdAt.lte = new Date(`${opts.dateTo}T23:59:59.999Z`);
     where.createdAt = createdAt;
   }
+  return where;
+}
+
+export async function listStockEntries(opts: {
+  companyId: number;
+  search?: string | null;
+  supplier?: number | null;
+  store?: number | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  ordering?: string | null;
+  paymentStatus?: StockEntryPaymentStatus | null;
+  page: PageParams;
+}) {
+  const where = buildStockEntryWhere(opts);
 
   // ordering: created_at | total_amount (+/-). Default: -created_at
   let orderBy: Prisma.StockEntryOrderByWithRelationInput = { createdAt: 'desc' };
@@ -246,43 +321,68 @@ export async function listStockEntries(opts: {
     else if (field === 'total_amount') orderBy = { totalAmount: dir };
   }
 
-  const [count, entries] = await prisma.$transaction([
-    prisma.stockEntry.count({ where }),
-    prisma.stockEntry.findMany({
+  const include = {
+    supplier: { select: { name: true } },
+    store: { select: { name: true } },
+    createdBy: { select: { fullName: true } },
+    items: {
+      include: {
+        product: { select: { name: true, sku: true, barcode: true, shtrixCode: true } },
+      },
+    },
+  } satisfies Prisma.StockEntryInclude;
+
+  let count: number;
+  let entries: Prisma.StockEntryGetPayload<{ include: typeof include }>[];
+  let totalIn: Map<number, number>;
+  let totalPaid: Map<number, number>;
+
+  if (opts.paymentStatus) {
+    // Holat tranzaksiya yig'indilaridan hisoblanadi — filtr sahifalashdan OLDIN
+    // butun to'plam ustida qo'llanadi (Django'da SQL annotatsiya bilan bir xil natija).
+    const slim = await prisma.stockEntry.findMany({
       where,
       orderBy,
-      skip: opts.page.skip,
-      take: opts.page.take,
-      include: {
-        supplier: { select: { name: true } },
-        store: { select: { name: true } },
-        createdBy: { select: { fullName: true } },
-        items: {
-          include: {
-            product: { select: { sku: true, barcode: true, shtrixCode: true } },
-          },
-        },
-      },
-    }),
-  ]);
-
-  const entryIds = entries.map((e) => e.id);
-
-  // total_in / total_paid — entry bo'yicha SupplierTransaction yig'indisi
-  const txGroups = entryIds.length
-    ? await prisma.supplierTransaction.groupBy({
-        by: ['entryId', 'type'],
-        where: { entryId: { in: entryIds } },
-        _sum: { amount: true },
+      select: { id: true, paidAmount: true },
+    });
+    const sums = await entryTxSums(slim.map((e) => e.id));
+    const matchedIds = slim
+      .filter((e) => {
+        const status = entryPaymentStatus(
+          sums.totalIn.get(e.id) ?? 0,
+          sums.totalPaid.get(e.id) ?? 0,
+          Number(e.paidAmount ?? 0),
+        );
+        return status === opts.paymentStatus;
       })
-    : [];
-  const totalIn = new Map<number, number>();
-  const totalPaid = new Map<number, number>();
-  for (const g of txGroups) {
-    if (g.entryId == null) continue;
-    const amount = Number(g._sum.amount ?? 0);
-    if (g.type === 'in') totalIn.set(g.entryId, amount);
-    else if (g.type === 'pay') totalPaid.set(g.entryId, amount);
+      .map((e) => e.id);
+
+    count = matchedIds.length;
+    const pageIds = matchedIds.slice(opts.page.skip, opts.page.skip + opts.page.take);
+    const rows = pageIds.length
+      ? await prisma.stockEntry.findMany({ where: { id: { in: pageIds } }, include })
+      : [];
+    // findMany id-in tartibni saqlamaydi — sahifa tartibini qayta tiklaymiz
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
+    entries = pageIds.map((id) => rowMap.get(id)).filter((r): r is NonNullable<typeof r> => Boolean(r));
+    totalIn = sums.totalIn;
+    totalPaid = sums.totalPaid;
+  } else {
+    const [c, rows] = await prisma.$transaction([
+      prisma.stockEntry.count({ where }),
+      prisma.stockEntry.findMany({
+        where,
+        orderBy,
+        skip: opts.page.skip,
+        take: opts.page.take,
+        include,
+      }),
+    ]);
+    count = c;
+    entries = rows;
+    const sums = await entryTxSums(entries.map((e) => e.id));
+    totalIn = sums.totalIn;
+    totalPaid = sums.totalPaid;
   }
 
   const results = entries.map((e) => {
@@ -295,12 +395,14 @@ export async function listStockEntries(opts: {
       supplier_name: e.supplier?.name ?? '',
       store: e.storeId,
       store_name: e.store?.name ?? '',
+      total_amount: Number(e.totalAmount).toFixed(2),
       paid_amount: Number(e.paidAmount).toFixed(2),
       total_in: tIn.toFixed(2),
       total_paid: tPaid.toFixed(2),
       debt: debt > 0 ? debt : 0,
       created_by: e.createdById,
       full_name: e.createdBy?.fullName ?? "Shaxsiy ma'lumotlar kiritilmagan!",
+      note: e.note ?? '',
       items: e.items.map(serializeStockEntryItem),
       created_at: e.createdAt,
     };

@@ -38,17 +38,18 @@ interface ModuleDef {
 const COMPANY_MODULES: ModuleDef[] = [
   { module: 'dashboard', label: 'Boshqaruv paneli', scope: 'company', actions: ['view'] },
 
-  { module: 'sales', label: 'Sotuvlar', scope: 'company', actions: ['view', 'create', 'delete'] },
+  { module: 'sales', label: 'Sotuvlar', scope: 'company', actions: ['view', 'create', 'delete', 'export'] },
   { module: 'returns', label: 'Qaytarishlar', scope: 'company', actions: ['view', 'create'] },
-  { module: 'transfers', label: "Ko'chirishlar", scope: 'company', actions: ['view', 'create', 'approve', 'delete'] },
+  { module: 'transfers', label: "Ko'chirishlar", scope: 'company', actions: ['view', 'create', 'approve', 'delete', 'export'] },
 
-  { module: 'products', label: 'Mahsulotlar', scope: 'company', actions: ['view', 'create', 'update', 'delete'] },
-  { module: 'categories', label: 'Mahsulot kategoriyalari', scope: 'company', actions: ['view', 'create', 'update', 'delete'] },
+  { module: 'products', label: 'Mahsulotlar', scope: 'company', actions: ['view', 'create', 'update', 'delete', 'export'] },
+  { module: 'categories', label: 'Mahsulot kategoriyalari', scope: 'company', actions: ['view', 'create', 'update', 'delete', 'export'] },
   { module: 'brands', label: 'Brendlar', scope: 'company', actions: ['view', 'create', 'update', 'delete'] },
   { module: 'stock_entries', label: 'Kirimlar', scope: 'company', actions: ['view', 'create', 'delete'] },
-  { module: 'inventory', label: 'Inventarizatsiya', scope: 'company', actions: ['view', 'create', 'update', 'delete'] },
+  { module: 'inventory', label: 'Inventarizatsiya', scope: 'company', actions: ['view', 'create', 'update', 'delete', 'export'] },
+  { module: 'writeoff', label: 'Hisobdan chiqarish', scope: 'company', actions: ['view', 'create', 'update', 'delete'] },
 
-  { module: 'customers', label: 'Mijozlar', scope: 'company', actions: ['view', 'create', 'update', 'delete'] },
+  { module: 'customers', label: 'Mijozlar', scope: 'company', actions: ['view', 'create', 'update', 'delete', 'export'] },
   { module: 'suppliers', label: "Ta'minotchilar", scope: 'company', actions: ['view', 'create', 'update', 'delete'] },
   { module: 'debts', label: 'Qarzlar', scope: 'company', actions: ['view', 'create'] },
 

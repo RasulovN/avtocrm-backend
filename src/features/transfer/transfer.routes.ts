@@ -8,6 +8,7 @@ import {
   listTransfers,
   listNotifications,
 } from './transfer.service.js';
+import { buildTransferExportExcel } from '../exports/excelExports.service.js';
 
 // Django: apps/transfer/urls.py. Multi-tenant: companyId scope + RBAC guard.
 //   ''                  -> ro'yxat            (company.transfers.view)
@@ -21,6 +22,24 @@ export async function transferRoutes(app: FastifyInstance) {
     { onRequest: [app.requireCompany, app.requirePermission('company.transfers.view')] },
     async (req) => {
       return listTransfers(getCompanyId(req));
+    },
+  );
+
+  // GET export/ — TransferExportAPIView (.xlsx)
+  app.get(
+    '/export/',
+    { onRequest: [app.requireCompany, app.requirePermission('company.transfers.export')] },
+    async (req, reply) => {
+      const companyId = getCompanyId(req);
+      const q = req.query as Record<string, string | undefined>;
+      const buffer = await buildTransferExportExcel({
+        companyId,
+        status: (q.status ?? '').trim() || null,
+      });
+      return reply
+        .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .header('Content-Disposition', 'attachment; filename="kochirishlar.xlsx"')
+        .send(buffer);
     },
   );
 

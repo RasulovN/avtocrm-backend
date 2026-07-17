@@ -355,6 +355,7 @@ function serializeSaleItem(item: SaleWithRelations['items'][number]) {
     id: item.id,
     product: item.productId,
     product_name: item.product ? item.product.name : null,
+    sku: item.product ? item.product.sku : null,
     quantity: item.quantity,
     unit_price: decimalToString(item.unitPrice),
     total_price: decimalToString(item.totalPrice),
@@ -370,6 +371,7 @@ function serializePayment(p: SaleWithRelations['payments'][number]) {
     method: p.methodId,
     method_name: p.method ? p.method.name : null,
     method_code: p.method ? p.method.code : null,
+    is_refund: p.isRefund,
     created_at: p.createdAt,
   };
 }
