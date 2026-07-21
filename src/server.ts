@@ -5,9 +5,13 @@ import { initRealtime } from './realtime/io.js';
 import { startScheduler, stopScheduler } from './jobs/scheduler.js';
 import { syncPermissions, regrantSystemRoles } from './features/rbac/rbac.service.js';
 import { seedDefaultPaymentMethods } from './features/payment-methods/paymentMethods.service.js';
+import { initTelegramAlerts } from './common/telegramAlert.js';
 
 async function main() {
   const app = await buildApp();
+
+  // Telegram server-alert (5xx, crash, restart xabarlari)
+  initTelegramAlerts();
 
   // socket.io — jonli bildirishnomalar (Fastify'ning HTTP serveriga ulanadi)
   initRealtime(app.server);

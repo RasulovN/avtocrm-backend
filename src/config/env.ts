@@ -136,6 +136,12 @@ export const env = {
   // ===== Yandex Maps =====
   YANDEX_MAPS_API_KEY: process.env.YANDEX_MAPS_API_KEY ?? '',
 
+  // ===== Telegram server-alert bot =====
+  // 5xx xatolar va crashlar haqida xabar boradi. CHAT_ID bo'sh bo'lsa —
+  // botga yozgan oxirgi chat getUpdates orqali avtomatik aniqlanadi.
+  TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN ?? '',
+  TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID ?? '',
+
   EMAIL_HOST: process.env.EMAIL_HOST ?? '',
   EMAIL_PORT: Number(process.env.EMAIL_PORT ?? 587),
   EMAIL_USE_TLS: (process.env.EMAIL_USE_TLS ?? 'true') === 'true',

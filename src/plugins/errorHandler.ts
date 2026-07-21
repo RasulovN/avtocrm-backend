@@ -3,11 +3,24 @@ import fp from 'fastify-plugin';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
 import { ApiError } from '../common/errors.js';
+import { notifyServerError } from '../common/telegramAlert.js';
 
 export const errorHandler = fp(async (app: FastifyInstance) => {
   app.setErrorHandler((error, req, reply) => {
     // Bizning API xatoliklarimiz
     if (error instanceof ApiError) {
+      if (error.statusCode >= 500) {
+        notifyServerError({
+          statusCode: error.statusCode,
+          method: req.method,
+          url: req.url,
+          reqId: String(req.id),
+          userId: req.authUser?.id ?? null,
+          errorName: error.name,
+          message: error.message,
+          stack: error.stack,
+        });
+      }
       return reply.status(error.statusCode).send(error.payload);
     }
 
@@ -42,6 +55,17 @@ export const errorHandler = fp(async (app: FastifyInstance) => {
     }
 
     req.log.error(error);
+    // Telegram'ga 5xx alert (fire-and-forget, so'rovni sekinlashtirmaydi)
+    notifyServerError({
+      statusCode: 500,
+      method: req.method,
+      url: req.url,
+      reqId: String(req.id),
+      userId: req.authUser?.id ?? null,
+      errorName: (error as Error).name,
+      message: (error as Error).message ?? String(error),
+      stack: (error as Error).stack,
+    });
     return reply.status(500).send({ detail: 'Internal server error' });
   });
 
