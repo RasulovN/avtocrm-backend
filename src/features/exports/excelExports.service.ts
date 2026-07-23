@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
+import { buildTransferWhere } from '../transfer/transfer.service.js';
 
 // Django'dagi per-app export view'lari ekvivalenti (openpyxl → exceljs).
 // Har bir builder ro'yxat filtrlari bilan .xlsx Buffer qaytaradi;
@@ -298,10 +299,18 @@ const TRANSFER_STATUS_LABEL: Record<string, string> = {
 
 export async function buildTransferExportExcel(opts: {
   companyId: number;
+  search?: string | null;
   status?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
 }): Promise<Buffer> {
-  const where: Prisma.StockTransferWhereInput = { companyId: opts.companyId };
-  if (opts.status) where.status = opts.status;
+  // Ro'yxat sahifasi bilan bir xil filtrlar (transfer.service.buildTransferWhere)
+  const where = buildTransferWhere(opts.companyId, {
+    search: opts.search ?? null,
+    status: opts.status ?? null,
+    dateFrom: opts.dateFrom ?? null,
+    dateTo: opts.dateTo ?? null,
+  });
 
   const transfers = await prisma.stockTransfer.findMany({
     where,

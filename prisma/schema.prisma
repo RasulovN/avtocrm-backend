@@ -71,6 +71,7 @@ model Company {
   productBatches          ProductBatch[]
   stockEntries            StockEntry[]
   purchaseSessions        PurchaseSession[]
+  transferSessions        TransferSession[]
   supplierTransactions    SupplierTransaction[]
   inventorySessions       InventorySession[]
   lowStockItems           LowStockItem[]
@@ -432,6 +433,7 @@ model User {
   history              UserHistory[]
   stockEntries         StockEntry[]
   purchaseSessions     PurchaseSession[]
+  transferSessions     TransferSession[]
   inventorySessions    InventorySession[]
   sales                Sale[]
   saleReturns          SaleReturn[]
@@ -513,8 +515,10 @@ model Store {
   inventorySnapshots InventorySnapshot[]
   sales              Sale[]
   saleReturns        SaleReturn[]
-  outgoingTransfers  StockTransfer[]     @relation("OutgoingTransfers")
-  incomingTransfers  StockTransfer[]     @relation("IncomingTransfers")
+  outgoingTransfers    StockTransfer[]   @relation("OutgoingTransfers")
+  incomingTransfers    StockTransfer[]   @relation("IncomingTransfers")
+  transferSessionsFrom TransferSession[] @relation("TransferSessionsFrom")
+  transferSessionsTo   TransferSession[] @relation("TransferSessionsTo")
   lowStockItems      LowStockItem[]
   writeOffs          WriteOff[]
 
@@ -763,6 +767,7 @@ model StockEntry {
 
   items        StockEntryItem[]
   transactions SupplierTransaction[]
+  payments     StockEntryPayment[]
   session      PurchaseSession?
 
   @@index([companyId])
@@ -790,6 +795,8 @@ model PurchaseSession {
   cardAmount Decimal        @default(0) @map("card_amount") @db.Decimal(15, 2)
   bankCardId Int?           @map("bank_card_id")
   bankCard   PaymentMethod? @relation("PurchaseSessionBankCard", fields: [bankCardId], references: [id], onDelete: SetNull)
+  // Split to'lov qoralamasi: [{type: cash|card, amount, bank_card: id|null}, ...]
+  payments   Json           @default("[]")
   // Ixtiyoriy izoh — confirm bosqichida StockEntry.note ga ko'chadi
   note       String         @default("")
 
@@ -810,6 +817,26 @@ model PurchaseSession {
   @@index([companyId])
   @@index([createdById, status])
   @@map("purchase_session")
+}
+
+// Kirim uchun split (aralash) to'lov qatori — sales.Payment bilan bir xil shakl:
+// {type: cash|card, amount, bank_card}. Bitta kirimda bir nechta karta bo'lishi mumkin.
+model StockEntryPayment {
+  id         Int            @id @default(autoincrement())
+  entryId    Int            @map("entry_id")
+  entry      StockEntry     @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  amount     Decimal        @db.Decimal(15, 2)
+  type       String         @db.VarChar(5) // cash/card
+  // Karta to'lovida qaysi to'lov turi (PaymentMethod katalogi) ishlatilgani.
+  // Restrict — to'lovlari bor usulni o'chirib bo'lmaydi (soft delete: is_active=false).
+  bankCardId Int?           @map("bank_card_id")
+  bankCard   PaymentMethod? @relation("StockEntryPaymentBankCard", fields: [bankCardId], references: [id], onDelete: Restrict)
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  @@index([entryId])
+  @@index([type, createdAt])
+  @@map("stock_entry_payment")
 }
 
 model StockEntryItem {
@@ -1114,11 +1141,14 @@ model PaymentMethod {
   isActive  Boolean  @default(true) @map("is_active")
   isDefault Boolean  @default(false) @map("is_default") // POS'da oldindan tanlangan
   sortOrder Int      @default(0) @map("sort_order")
+  // Qaysi oqimda ko'rinadi: sale (faqat sotuv), purchase (faqat kirim), both (ikkalasi)
+  scope     String   @default("both") @db.VarChar(10)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   payments             Payment[]
   stockEntries         StockEntry[]          @relation("StockEntryBankCard")
+  stockEntryPayments   StockEntryPayment[]   @relation("StockEntryPaymentBankCard")
   purchaseSessions     PurchaseSession[]     @relation("PurchaseSessionBankCard")
   supplierTransactions SupplierTransaction[] @relation("SupplierTransactionBankCard")
 
@@ -1212,9 +1242,43 @@ model StockTransfer {
 
   items         StockTransferItem[]
   notifications Notification[]
+  session       TransferSession?
 
   @@index([companyId])
   @@map("stock_transfer")
+}
+
+// O'tkazma qoralamasi (sessiya): forma to'ldirilayotganda avto-saqlanadi.
+// Yuborilmaguncha in_progress holatda qoladi — omborga TA'SIR QILMAYDI.
+// Yuborilganda haqiqiy StockTransfer yaratiladi va sessiya completed bo'ladi.
+// items JSON ko'rinishida saqlanadi (qoralama — yuborishda qayta validatsiya qilinadi).
+model TransferSession {
+  id          Int     @id @default(autoincrement())
+  companyId   Int     @map("company_id")
+  company     Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  fromStoreId Int?    @map("from_store_id")
+  fromStore   Store?  @relation("TransferSessionsFrom", fields: [fromStoreId], references: [id], onDelete: Cascade)
+  toStoreId   Int?    @map("to_store_id")
+  toStore     Store?  @relation("TransferSessionsTo", fields: [toStoreId], references: [id], onDelete: Cascade)
+
+  // [{product, quantity}, ...]
+  items Json @default("[]")
+
+  status String @default("in_progress") @db.VarChar(12) // in_progress/completed/cancelled
+
+  createdById Int  @map("created_by_id")
+  createdBy   User @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  // Yuborilgandan keyin yaratilgan haqiqiy o'tkazma
+  transferId Int?           @unique @map("transfer_id")
+  transfer   StockTransfer? @relation(fields: [transferId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([companyId])
+  @@index([createdById, status])
+  @@map("transfer_session")
 }
 
 model StockTransferItem {

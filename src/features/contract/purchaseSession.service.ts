@@ -29,6 +29,36 @@ interface SessionItemJson {
   wholesale_price: string;
 }
 
+// Split to'lov qoralamasi JSON qatori: {type, amount, bank_card}
+interface SessionPaymentJson {
+  type: 'cash' | 'card';
+  amount: string;
+  bank_card: number | null;
+}
+
+function sessionPayments(session: PurchaseSession): SessionPaymentJson[] {
+  const raw = session.payments;
+  if (!Array.isArray(raw)) return [];
+  return (raw as unknown[]).map((p) => {
+    const it = (p ?? {}) as Record<string, unknown>;
+    return {
+      type: it.type === 'card' ? 'card' : 'cash',
+      amount: String(it.amount ?? 0),
+      bank_card: typeof it.bank_card === 'number' ? it.bank_card : null,
+    };
+  });
+}
+
+function toPaymentsJson(
+  payments: { type?: 'cash' | 'card'; amount: string; bank_card?: number | null }[],
+): Prisma.InputJsonValue {
+  return payments.map((p) => ({
+    type: p.type === 'card' ? 'card' : 'cash',
+    amount: String(p.amount ?? 0),
+    bank_card: p.bank_card ?? null,
+  }));
+}
+
 // JSON'dan o'qilgan itemlarni normalizatsiya qiladi (draft — qiymatlar chala bo'lishi mumkin)
 function sessionItems(session: PurchaseSession): SessionItemJson[] {
   const raw = session.items;
@@ -65,6 +95,7 @@ export function serializePurchaseSession(session: SessionWithNames) {
     cash_amount: Number(session.cashAmount).toFixed(2),
     card_amount: Number(session.cardAmount).toFixed(2),
     bank_card: session.bankCardId ?? null,
+    payments: sessionPayments(session),
     note: session.note ?? '',
     status: session.status,
     current_step: session.currentStep,
@@ -156,6 +187,7 @@ export async function createSession(opts: {
       cashAmount: Number(data.cash_amount ?? 0).toFixed(2),
       cardAmount: Number(data.card_amount ?? 0).toFixed(2),
       bankCardId: data.bank_card ?? null,
+      payments: toPaymentsJson(data.payments ?? []),
       note: data.note ?? '',
       currentStep: data.current_step ?? 1,
       createdById: opts.userId,
@@ -202,6 +234,7 @@ export async function updateSession(opts: {
   if (data.cash_amount !== undefined) updateData.cashAmount = Number(data.cash_amount).toFixed(2);
   if (data.card_amount !== undefined) updateData.cardAmount = Number(data.card_amount).toFixed(2);
   if (data.bank_card !== undefined) updateData.bankCardId = data.bank_card;
+  if (data.payments !== undefined) updateData.payments = toPaymentsJson(data.payments);
   if (data.note !== undefined) updateData.note = data.note;
   if (data.current_step !== undefined) updateData.currentStep = data.current_step;
 
@@ -276,12 +309,17 @@ export async function confirmSession(companyId: number, userId: number, pk: numb
     });
   }
 
+  // Split to'lovlar bo'lsa createEntry ularni ishlatadi (flat maydonlar e'tiborga
+  // olinmaydi); bo'lmasa flat cash/card/bank_card bilan eski oqim ishlaydi.
+  const draftPayments = sessionPayments(session).filter((p) => Number(p.amount) > 0);
+
   const data = stockEntryCreateSchema.parse({
     supplier: session.supplierId,
     store: session.storeId,
     cash_amount: Number(session.cashAmount).toFixed(2),
     card_amount: Number(session.cardAmount).toFixed(2),
     bank_card: session.bankCardId ?? null,
+    payments: draftPayments,
     note: session.note ?? '',
     items: entryItemsPayload(session),
   });

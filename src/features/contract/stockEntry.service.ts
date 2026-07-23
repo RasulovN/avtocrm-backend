@@ -81,6 +81,35 @@ export async function validateEntryRelations(
   }
 }
 
+// Ichki: normalizatsiya qilingan split to'lov qatori
+interface NormalizedPaymentRow {
+  type: 'cash' | 'card';
+  amount: number;
+  bankCardId: number | null;
+}
+
+// Django StockEntryService._normalize_payments ekvivalenti:
+// payments[] berilsa flat cash/card/bank_card E'TIBORGA OLINMAYDI (undan qayta
+// hisoblanadi); bo'lmasa flat maydonlardan sintez qilinadi (eski klientlar, Excel).
+function normalizePayments(data: StockEntryCreateInput): NormalizedPaymentRow[] {
+  const explicit = (data.payments ?? []).filter((p) => Number(p.amount) > 0);
+  if (explicit.length > 0) {
+    return explicit.map((p) => ({
+      type: p.type,
+      amount: Number(p.amount),
+      bankCardId: p.type === 'card' ? (p.bank_card ?? null) : null,
+    }));
+  }
+  const rows: NormalizedPaymentRow[] = [];
+  if (Number(data.cash_amount) > 0) {
+    rows.push({ type: 'cash', amount: Number(data.cash_amount), bankCardId: null });
+  }
+  if (Number(data.card_amount) > 0) {
+    rows.push({ type: 'card', amount: Number(data.card_amount), bankCardId: data.bank_card ?? null });
+  }
+  return rows;
+}
+
 export async function createEntry(opts: {
   companyId: number;
   data: StockEntryCreateInput;
@@ -97,22 +126,40 @@ export async function createEntry(opts: {
     0,
   );
 
-  const cashAmount = Number(data.cash_amount);
-  const cardAmount = Number(data.card_amount);
+  // Split to'lovlar — cash/card yig'indilari shulardan hisoblanadi
+  const paymentRows = normalizePayments(data);
+  const cashAmount = paymentRows
+    .filter((p) => p.type === 'cash')
+    .reduce((s, p) => s + p.amount, 0);
+  const cardAmount = paymentRows
+    .filter((p) => p.type === 'card')
+    .reduce((s, p) => s + p.amount, 0);
 
-  // bank_card (PaymentMethod katalogi) — berilgan bo'lsa faol bo'lishi shart.
-  // Ixtiyoriy: eski klientlar va Excel import bank_card yubormaydi.
-  let bankCardId: number | null = null;
-  if (data.bank_card) {
-    const card = await prisma.paymentMethod.findFirst({
-      where: { id: data.bank_card, isActive: true },
+  // Karta qatorlarida ishlatilgan PaymentMethod'lar faol va kirim uchun
+  // ruxsat etilgan (scope purchase/both) bo'lishi shart. Legacy bank_card ham
+  // (berilgan bo'lsa) xuddi shu tekshiruvdan o'tadi.
+  const cardIds = new Set<number>();
+  for (const row of paymentRows) {
+    if (row.type === 'card' && row.bankCardId) cardIds.add(row.bankCardId);
+  }
+  if (data.bank_card) cardIds.add(data.bank_card);
+  if (cardIds.size > 0) {
+    const found = await prisma.paymentMethod.findMany({
+      where: { id: { in: [...cardIds] }, isActive: true, scope: { in: ['purchase', 'both'] } },
       select: { id: true },
     });
-    if (!card) {
-      throw new ValidationError({ bank_card: ['Invalid pk - object does not exist.'] });
+    const foundIds = new Set(found.map((c) => c.id));
+    for (const id of cardIds) {
+      if (!foundIds.has(id)) {
+        throw new ValidationError({ bank_card: ['Invalid pk - object does not exist.'] });
+      }
     }
-    bankCardId = card.id;
   }
+
+  // Legacy bitta-karta maydoni: aynan bitta karta qatori bo'lsa — o'sha karta
+  const cardRows = paymentRows.filter((p) => p.type === 'card');
+  const bankCardId =
+    cardRows.length === 1 ? (cardRows[0].bankCardId ?? null) : null;
 
   // calculate_payment_fields — create'dan oldin
   const payment = calculatePaymentFields(totalEntryAmount, cashAmount, cardAmount);
@@ -134,6 +181,18 @@ export async function createEntry(opts: {
         createdById: opts.userId,
       },
     });
+
+    // Split to'lov qatorlari (StockEntryPayment) — sales.Payment bilan bir xil shakl
+    if (paymentRows.length > 0) {
+      await tx.stockEntryPayment.createMany({
+        data: paymentRows.map((p) => ({
+          entryId: created.id,
+          amount: p.amount.toFixed(2),
+          type: p.type,
+          bankCardId: p.type === 'card' ? p.bankCardId : null,
+        })),
+      });
+    }
 
     // Mavjud batchlar — store + product bo'yicha (tenant doirasida)
     const existingBatches = await tx.productBatch.findMany({

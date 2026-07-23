@@ -282,8 +282,39 @@ export async function rejectTransfer(opts: {
 
 // ─────────────────────────────────────────────
 // LIST  (Django: TransferListAPIView -> TransferListSerializer)
-//   Filtrsiz .all(), pagination yo'q (DRF APIView). select_related/prefetch.
+//   Filtrlar: search (do'kon/mahsulot nomi), status (p/a/r), date_from/date_to.
+//   Server-side pagination (page/limit) — eksport ham shu where'ni ishlatadi.
 // ─────────────────────────────────────────────
+
+export interface TransferListFilters {
+  search?: string | null;
+  status?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+}
+
+export function buildTransferWhere(
+  companyId: number,
+  filters: TransferListFilters,
+): Prisma.StockTransferWhereInput {
+  const where: Prisma.StockTransferWhereInput = { companyId };
+  if (filters.status) where.status = filters.status;
+  if (filters.search) {
+    const q = filters.search;
+    where.OR = [
+      { fromStore: { name: { contains: q, mode: 'insensitive' } } },
+      { toStore: { name: { contains: q, mode: 'insensitive' } } },
+      { items: { some: { product: { name: { contains: q, mode: 'insensitive' } } } } },
+    ];
+  }
+  if (filters.dateFrom || filters.dateTo) {
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (filters.dateFrom) createdAt.gte = new Date(`${filters.dateFrom}T00:00:00.000Z`);
+    if (filters.dateTo) createdAt.lte = new Date(`${filters.dateTo}T23:59:59.999Z`);
+    where.createdAt = createdAt;
+  }
+  return where;
+}
 
 function serializeTransferItem(item: {
   id: number;
@@ -304,31 +335,46 @@ function serializeTransferItem(item: {
   };
 }
 
-export async function listTransfers(companyId: number) {
-  const transfers = await prisma.stockTransfer.findMany({
-    where: { companyId },
-    orderBy: { createdAt: 'desc' },
-    include: {
-      fromStore: { select: { name: true } },
-      toStore: { select: { name: true } },
-      approvedBy: { select: { fullName: true } },
-      items: { include: { product: { select: { name: true, sku: true } } } },
-    },
-  });
+export async function listTransfers(opts: {
+  companyId: number;
+  filters: TransferListFilters;
+  skip: number;
+  take: number;
+}) {
+  const where = buildTransferWhere(opts.companyId, opts.filters);
 
-  return transfers.map((t) => ({
+  const [count, transfers] = await prisma.$transaction([
+    prisma.stockTransfer.count({ where }),
+    prisma.stockTransfer.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: opts.skip,
+      take: opts.take,
+      include: {
+        fromStore: { select: { name: true } },
+        toStore: { select: { name: true } },
+        approvedBy: { select: { fullName: true } },
+        items: { include: { product: { select: { name: true, sku: true } } } },
+      },
+    }),
+  ]);
+
+  const results = transfers.map((t) => ({
     id: t.id,
     from_store: t.fromStoreId,
     from_store_name: t.fromStore?.name ?? '',
     to_store: t.toStoreId,
     to_store_name: t.toStore?.name ?? '',
     status: t.status,
+    created_at: t.createdAt,
     created_by: t.createdById,
     approved_by: t.approvedById,
     approved_by_name: t.approvedBy?.fullName ?? '',
     approved_at: t.approvedAt,
     items: t.items.map(serializeTransferItem),
   }));
+
+  return { results, count };
 }
 
 // ─────────────────────────────────────────────

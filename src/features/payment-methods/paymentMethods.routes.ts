@@ -21,10 +21,13 @@ export async function paymentMethodsRoutes(app: FastifyInstance) {
   };
 
   // ============================================================
-  //  TENANT (POS): faol to'lov turlari — sotuvda karta kanali tanlash uchun
+  //  TENANT (POS): faol to'lov turlari — sotuv/kirimda karta kanali tanlash uchun
+  //  ?scope=sale|purchase — mos oqim uchun filtrlangan ro'yxat (both har doim kiradi)
   // ============================================================
-  app.get('/', { onRequest: app.authenticate }, async () => {
-    return listActivePaymentMethods();
+  app.get('/', { onRequest: app.authenticate }, async (req) => {
+    const q = req.query as Record<string, string | undefined>;
+    const scope = q.scope === 'sale' || q.scope === 'purchase' ? q.scope : null;
+    return listActivePaymentMethods(scope);
   });
 
   // ============================================================

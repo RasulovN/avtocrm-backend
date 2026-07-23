@@ -85,6 +85,26 @@ const stockEntryItemSchema = z
     }
   });
 
+// Split (aralash) to'lov qatori — sales paymentInputSchema bilan bir xil shakl:
+// karta bo'lsa bank_card majburiy, naqdda bank_card bo'lmasligi kerak.
+export const stockEntryPaymentInputSchema = z
+  .object({
+    type: z.enum(['cash', 'card']),
+    amount: decimalLike,
+    bank_card: z.number().int().nullable().optional().default(null),
+  })
+  .superRefine((data, ctx) => {
+    if (Number(data.amount) <= 0) {
+      ctx.addIssue({ code: 'custom', message: "To'lov summasi 0 dan katta bo'lishi kerak", path: ['amount'] });
+    }
+    if (data.type === 'card' && !data.bank_card) {
+      ctx.addIssue({ code: 'custom', message: "Karta to'lovi uchun to'lov turini (kartani) tanlang", path: ['bank_card'] });
+    }
+    if (data.type === 'cash' && data.bank_card) {
+      ctx.addIssue({ code: 'custom', message: "Naqd to'lovda karta ko'rsatilmaydi", path: ['bank_card'] });
+    }
+  });
+
 export const stockEntryCreateSchema = z
   .object({
     supplier: z.number().int(),
@@ -94,6 +114,9 @@ export const stockEntryCreateSchema = z
     // Karta to'lovida qaysi to'lov turi (PaymentMethod katalogi) ishlatilgani.
     // Ixtiyoriy (eski klientlar va Excel import uchun).
     bank_card: z.number().int().nullable().optional().default(null),
+    // Split to'lovlar — berilsa flat cash_amount/card_amount/bank_card e'tiborga
+    // olinmaydi (ular payments'dan qayta hisoblanadi).
+    payments: z.array(stockEntryPaymentInputSchema).optional().default([]),
     // Ixtiyoriy izoh/tavsif
     note: z.string().max(1000).optional().default(''),
     items: z.array(stockEntryItemSchema),
@@ -110,11 +133,35 @@ export const stockEntryCreateSchema = z
       return;
     }
 
+    if (data.payments.length > 0) {
+      // Bitta karta ikki marta ishlatilmaydi; naqd qatori bittadan oshmaydi
+      const usedCards = new Set<number>();
+      let cashRows = 0;
+      for (const p of data.payments) {
+        if (p.type === 'cash') {
+          cashRows += 1;
+          if (cashRows > 1) {
+            ctx.addIssue({ code: 'custom', message: "Naqd to'lov qatori bittadan oshmasligi kerak", path: ['payments'] });
+            break;
+          }
+        } else if (p.bank_card) {
+          if (usedCards.has(p.bank_card)) {
+            ctx.addIssue({ code: 'custom', message: 'Bitta karta ikki marta tanlangan', path: ['payments'] });
+            break;
+          }
+          usedCards.add(p.bank_card);
+        }
+      }
+    }
+
     const totalEntryAmount = data.items.reduce(
       (acc, item) => acc + Number(item.purchase_price) * item.quantity,
       0,
     );
-    const paidAmount = Number(data.cash_amount) + Number(data.card_amount);
+    const paidAmount =
+      data.payments.length > 0
+        ? data.payments.reduce((acc, p) => acc + Number(p.amount), 0)
+        : Number(data.cash_amount) + Number(data.card_amount);
     if (paidAmount > totalEntryAmount) {
       ctx.addIssue({ code: 'custom', message: "To'lov umumiy narxdan oshib ketdi!", path: [] });
     }
@@ -160,6 +207,13 @@ const purchaseSessionItemSchema = z.object({
   wholesale_price: decimalLike.default('0'),
 });
 
+// Split to'lov qoralamasi — lenient (draft bosqichida chala bo'lishi mumkin)
+const purchaseSessionPaymentSchema = z.object({
+  type: z.enum(['cash', 'card']).optional().default('cash'),
+  amount: decimalLike.default('0'),
+  bank_card: z.number().int().nullable().optional().default(null),
+});
+
 export const purchaseSessionCreateSchema = z.object({
   supplier: z.number().int(),
   store: z.number().int(),
@@ -167,6 +221,7 @@ export const purchaseSessionCreateSchema = z.object({
   cash_amount: decimalLike.default('0'),
   card_amount: decimalLike.default('0'),
   bank_card: z.number().int().nullable().optional().default(null),
+  payments: z.array(purchaseSessionPaymentSchema).optional().default([]),
   note: z.string().max(1000).optional().default(''),
   current_step: z.number().int().min(1).max(3).optional().default(1),
 });
@@ -179,6 +234,7 @@ export const purchaseSessionUpdateSchema = z.object({
   cash_amount: decimalLike.optional(),
   card_amount: decimalLike.optional(),
   bank_card: z.number().int().nullable().optional(),
+  payments: z.array(purchaseSessionPaymentSchema).optional(),
   note: z.string().max(1000).optional(),
   current_step: z.number().int().min(1).max(3).optional(),
 });
@@ -187,6 +243,7 @@ export type SupplierCreateInput = z.infer<typeof supplierCreateSchema>;
 export type SupplierUpdateInput = z.infer<typeof supplierUpdateSchema>;
 export type StockEntryCreateInput = z.infer<typeof stockEntryCreateSchema>;
 export type StockEntryItemInput = z.infer<typeof stockEntryItemSchema>;
+export type StockEntryPaymentInput = z.infer<typeof stockEntryPaymentInputSchema>;
 export type SupplierPaymentInput = z.infer<typeof supplierPaymentSchema>;
 export type PurchaseSessionItemInput = z.infer<typeof purchaseSessionItemSchema>;
 export type PurchaseSessionCreateInput = z.infer<typeof purchaseSessionCreateSchema>;

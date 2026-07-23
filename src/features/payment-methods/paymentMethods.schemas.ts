@@ -13,6 +13,8 @@ export const paymentMethodCreateSchema = z.object({
   is_active: z.boolean().optional(),
   is_default: z.boolean().optional(),
   sort_order: z.number().int().min(0).optional(),
+  // Qaysi oqimda ko'rinadi: sale (faqat sotuv), purchase (faqat kirim), both
+  scope: z.enum(['sale', 'purchase', 'both']).optional(),
 });
 
 // Super admin to'lov turi yangilash (partial)
@@ -28,6 +30,7 @@ export const paymentMethodUpdateSchema = z.object({
   is_active: z.boolean().optional(),
   is_default: z.boolean().optional(),
   sort_order: z.number().int().min(0).optional(),
+  scope: z.enum(['sale', 'purchase', 'both']).optional(),
 });
 
 export type PaymentMethodCreateInput = z.infer<typeof paymentMethodCreateSchema>;

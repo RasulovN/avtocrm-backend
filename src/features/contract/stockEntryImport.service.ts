@@ -399,6 +399,7 @@ export async function importStockEntryFromExcel(opts: {
       cash_amount: opts.cashAmount.toFixed(2),
       card_amount: opts.cardAmount.toFixed(2),
       bank_card: null,
+      payments: [],
       note: '',
       items,
     },

@@ -41,6 +41,7 @@ function serializePublic(m: PaymentMethod) {
     name: m.name,
     icon: m.icon,
     is_default: m.isDefault,
+    scope: m.scope,
   };
 }
 
@@ -54,6 +55,7 @@ function serializeAdmin(m: PaymentMethod & { _count: { payments: number } }) {
     is_active: m.isActive,
     is_default: m.isDefault,
     sort_order: m.sortOrder,
+    scope: m.scope,
     payments_count: m._count.payments,
     created_at: m.createdAt,
     updated_at: m.updatedAt,
@@ -81,10 +83,15 @@ export async function seedDefaultPaymentMethods() {
 
 // ── PUBLIC (POS) ───────────────────────────────────────────
 
-// Faol to'lov turlari — sotuv sahifasida karta kanali tanlash uchun
-export async function listActivePaymentMethods() {
+// Faol to'lov turlari — sotuv/kirim sahifalarida karta kanali tanlash uchun.
+// scope filtri: sale → scope in [sale, both]; purchase → scope in [purchase, both].
+export async function listActivePaymentMethods(scope?: 'sale' | 'purchase' | null) {
+  const where: Prisma.PaymentMethodWhereInput = { isActive: true };
+  if (scope === 'sale' || scope === 'purchase') {
+    where.scope = { in: [scope, 'both'] };
+  }
   const methods = await prisma.paymentMethod.findMany({
-    where: { isActive: true },
+    where,
     orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
   });
   return methods.map(serializePublic);
@@ -133,6 +140,7 @@ export async function createPaymentMethod(data: PaymentMethodCreateInput) {
         isActive: data.is_active ?? true,
         isDefault: data.is_default ?? false,
         sortOrder: data.sort_order ?? 0,
+        scope: data.scope ?? 'both',
       },
       include: { _count: { select: { payments: true } } },
     });
@@ -155,6 +163,7 @@ export async function updatePaymentMethod(id: number, data: PaymentMethodUpdateI
   if (data.is_active !== undefined) updateData.isActive = data.is_active;
   if (data.is_default !== undefined) updateData.isDefault = data.is_default;
   if (data.sort_order !== undefined) updateData.sortOrder = data.sort_order;
+  if (data.scope !== undefined) updateData.scope = data.scope;
 
   return prisma.$transaction(async (tx) => {
     if (data.is_default === true) {

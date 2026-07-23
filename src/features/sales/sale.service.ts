@@ -199,10 +199,14 @@ export async function createSale(params: {
     const finalTotalAmount = subtotal.minus(calculatedDiscount);
 
     // 🔴 PAYMENTS
-    // Karta kanali (method) berilgan bo'lsa — faol PaymentMethod ekanini tekshiramiz.
+    // Karta kanali (method) berilgan bo'lsa — faol va sotuv uchun ruxsat etilgan
+    // (scope sale/both) PaymentMethod ekanini tekshiramiz.
     const methodIds = [...new Set(paymentsData.map((p) => p.method).filter((m): m is number => m != null))];
     const validMethods = methodIds.length
-      ? await tx.paymentMethod.findMany({ where: { id: { in: methodIds }, isActive: true }, select: { id: true } })
+      ? await tx.paymentMethod.findMany({
+          where: { id: { in: methodIds }, isActive: true, scope: { in: ['sale', 'both'] } },
+          select: { id: true },
+        })
       : [];
     const validMethodIds = new Set(validMethods.map((m) => m.id));
     for (const id of methodIds) {
