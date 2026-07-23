@@ -87,63 +87,112 @@ async function getSaleDebt(
   return inc.minus(dec);
 }
 
-// Django DebtService.pay_debt (@transaction.atomic):
-//   - Sale'ni select_for_update bilan qulflash
-//   - amount <= 0  -> "Miqdor ijobiy bo'lishi kerak"
-//   - current_debt <= 0 -> "Bu sotuvda qarz yo'q"
-//   - amount > current_debt -> "Miqdor qarzdan oshib ketdi"
-//   - Payment yaratish (customer=sale.customer, amount, type=payment_type, sale)
-//   - CustomerDebt yaratish (type = DECREASE "d", sale, customer)
-//   - return payment
-// Karta kanali (method) berilgan bo'lsa faol PaymentMethod ekanini tekshiradi.
-// Naqd to'lovda kanal saqlanmaydi.
-async function resolveMethodId(
+// Django DebtService._normalize_payment_chunks ekvivalenti:
+// split (payments ro'yxati) yoki eski bitta usulli argumentlarni yagona shaklga
+// keltiradi. Har bir karta qatorining method'i faol va sotuv uchun ruxsat etilgan
+// (scope sale/both) PaymentMethod bo'lishi shart. Naqd qatorida kanal saqlanmaydi.
+interface DebtChunk {
+  type: 'cash' | 'card';
+  amount: Prisma.Decimal;
+  methodId: number | null;
+}
+
+async function normalizeChunks(
   tx: Prisma.TransactionClient,
-  type: 'cash' | 'card',
-  method: number | null | undefined,
-): Promise<number | null> {
-  if (type !== 'card' || method == null) return null;
-  const pm = await tx.paymentMethod.findFirst({ where: { id: method, isActive: true } });
-  if (!pm) {
-    throw new ValidationError({ message: "Tanlangan to'lov turi mavjud emas yoki nofaol" });
+  input: {
+    amount?: string;
+    type?: 'cash' | 'card';
+    method?: number | null;
+    payments?: Array<{ type: 'cash' | 'card'; amount: string; method: number | null }>;
+  },
+): Promise<DebtChunk[]> {
+  let chunks: DebtChunk[];
+  if (input.payments && input.payments.length > 0) {
+    chunks = input.payments
+      .filter((p) => Number(p.amount) > 0)
+      .map((p) => ({
+        type: p.type,
+        amount: new Prisma.Decimal(p.amount),
+        methodId: p.type === 'card' ? (p.method ?? null) : null,
+      }));
+  } else if (input.amount !== undefined) {
+    const type = input.type ?? 'cash';
+    chunks = [
+      {
+        type,
+        amount: new Prisma.Decimal(input.amount),
+        methodId: type === 'card' ? (input.method ?? null) : null,
+      },
+    ];
+  } else {
+    chunks = [];
   }
-  return pm.id;
+
+  if (chunks.length === 0) {
+    throw new ValidationError({ message: "To'lov qatorlari bo'sh" });
+  }
+
+  const methodIds = [...new Set(chunks.map((c) => c.methodId).filter((m): m is number => m != null))];
+  if (methodIds.length > 0) {
+    const valid = await tx.paymentMethod.findMany({
+      where: { id: { in: methodIds }, isActive: true, scope: { in: ['sale', 'both'] } },
+      select: { id: true },
+    });
+    const validIds = new Set(valid.map((m) => m.id));
+    for (const id of methodIds) {
+      if (!validIds.has(id)) {
+        throw new ValidationError({ message: "Tanlangan to'lov turi mavjud emas yoki nofaol" });
+      }
+    }
+  }
+
+  return chunks;
+}
+
+function chunksTotal(chunks: DebtChunk[]): Prisma.Decimal {
+  return chunks.reduce((sum, c) => sum.plus(c.amount), new Prisma.Decimal(0));
 }
 
 // Qarz to'lovi sale holatini ham yangilaydi: paid_amount oshadi, to'liq yopilsa
 // status 'paid', qisman bo'lsa 'partial'. (Mijoz modali va ro'yxatlar
 // total_amount - paid_amount dan qarzni hisoblaydi — sinxron bo'lishi shart.)
+// Har bir split qator uchun alohida Payment yoziladi — qaysi kartadan qancha
+// to'langani tarixda qoladi; CustomerDebt DECREASE esa jami summa bilan bitta.
 async function applySalePayment(
   tx: Prisma.TransactionClient,
   params: {
     companyId: number;
     sale: Sale;
-    amount: Prisma.Decimal;
-    type: 'cash' | 'card';
-    methodId: number | null;
+    chunks: DebtChunk[];
   },
-): Promise<Payment> {
-  const { companyId, sale, amount, type, methodId } = params;
+): Promise<Payment[]> {
+  const { companyId, sale, chunks } = params;
+  const total = chunksTotal(chunks);
 
-  // 🔴 PAYMENT
-  const payment = await tx.payment.create({
-    data: {
-      companyId,
-      customerId: sale.customerId,
-      amount,
-      type,
-      methodId,
-      saleId: sale.id,
-    },
-  });
+  // 🔴 PAYMENTS — har split qator alohida yozuv
+  const payments: Payment[] = [];
+  for (const chunk of chunks) {
+    payments.push(
+      await tx.payment.create({
+        data: {
+          companyId,
+          customerId: sale.customerId,
+          amount: chunk.amount,
+          type: chunk.type,
+          methodId: chunk.methodId,
+          saleId: sale.id,
+        },
+      }),
+    );
+  }
 
-  // 🔴 DEBT REDUCE (SALE BILAN) — type = DECREASE ("d")
+  // 🔴 DEBT REDUCE (SALE BILAN) — type = DECREASE ("d"), jami summa
   await tx.customerDebt.create({
     data: {
       companyId,
       customerId: sale.customerId!,
       saleId: sale.id,
-      amount,
+      amount: total,
       type: 'd',
     },
   });
@@ -153,17 +202,20 @@ async function applySalePayment(
   await tx.sale.update({
     where: { id: sale.id },
     data: {
-      paidAmount: { increment: amount },
+      paidAmount: { increment: total },
       status: remainingDebt.lessThanOrEqualTo(0) ? 'paid' : 'partial',
     },
   });
 
-  return payment;
+  return payments;
 }
 
-export async function payDebt(companyId: number, input: PayDebtInput): Promise<Payment> {
-  const amount = new Prisma.Decimal(input.amount);
+export interface PayDebtResult {
+  payments: Payment[];
+  total: Prisma.Decimal;
+}
 
+export async function payDebt(companyId: number, input: PayDebtInput): Promise<PayDebtResult> {
   return prisma.$transaction(async (tx) => {
     // 🔴 LOCK SALE (Django: Sale.objects.select_for_update().get(id=sale_id))
     // Tenant scope: faqat shu company'ning sotuvi. Topilmasa -> 404.
@@ -176,7 +228,10 @@ export async function payDebt(companyId: number, input: PayDebtInput): Promise<P
 
     const sale = (await tx.sale.findFirst({ where: { id: input.sale, companyId } })) as Sale;
 
-    if (amount.lessThanOrEqualTo(0)) {
+    const chunks = await normalizeChunks(tx, input);
+    const total = chunksTotal(chunks);
+
+    if (total.lessThanOrEqualTo(0)) {
       throw new ValidationError({ message: "Miqdor ijobiy bo'lishi kerak" });
     }
 
@@ -186,12 +241,12 @@ export async function payDebt(companyId: number, input: PayDebtInput): Promise<P
       throw new ValidationError({ message: "Bu sotuvda qarz yo'q" });
     }
 
-    if (amount.greaterThan(currentDebt)) {
+    if (total.greaterThan(currentDebt)) {
       throw new ValidationError({ message: 'Miqdor qarzdan oshib ketdi' });
     }
 
-    const methodId = await resolveMethodId(tx, input.type, input.method);
-    return applySalePayment(tx, { companyId, sale, amount, type: input.type, methodId });
+    const payments = await applySalePayment(tx, { companyId, sale, chunks });
+    return { payments, total };
   });
 }
 
@@ -210,14 +265,19 @@ export async function payDebtBulk(
   companyId: number,
   input: PayDebtBulkInput,
 ): Promise<PayDebtBulkResult> {
-  const totalAmount = new Prisma.Decimal(input.amount);
-
   return prisma.$transaction(async (tx) => {
     // Mijoz tenant doirasida mavjudligini tekshiramiz
     const customer = await tx.customer.findFirst({
       where: { id: input.customer, companyId },
     });
     if (!customer) throw new NotFound();
+
+    // Split (payments[]) yoki eski bitta usulli argumentlar — yagona chunks shakli
+    const chunks = await normalizeChunks(tx, input);
+    const totalAmount = chunksTotal(chunks);
+    if (totalAmount.lessThanOrEqualTo(0)) {
+      throw new ValidationError({ message: "Miqdor ijobiy bo'lishi kerak" });
+    }
 
     // 🔴 LOCK: mijozning (tanlangan) sotuvlarini FIFO tartibida qulflaymiz —
     // parallel to'lovlar bir qarzni ikki marta yopib qo'ymasligi uchun.
@@ -264,27 +324,40 @@ export async function payDebtBulk(
       });
     }
 
-    const methodId = await resolveMethodId(tx, input.type, input.method);
+    // 🔴 FIFO taqsimlash: eng eski sotuvdan boshlab. Split rejimda chunklar
+    // "hovuz" sifatida navbat bilan ishlatiladi (Django pay_customer_debt kabi) —
+    // umumiy naqd/karta yig'indilari foydalanuvchi kiritganiga aynan teng bo'ladi,
+    // har sotuvda esa qaysi usuldan qancha to'langani Payment qatorlarida qoladi.
+    const pools = chunks.map((c) => ({ ...c }));
+    let poolIdx = 0;
 
-    // 🔴 FIFO taqsimlash: eng eski sotuvdan boshlab
     const results: PayDebtBulkResult['payments'] = [];
     let remaining = totalAmount;
     for (const { sale, debt } of debtSales) {
       if (remaining.lessThanOrEqualTo(0)) break;
-      const pay = Prisma.Decimal.min(remaining, debt);
-      const payment = await applySalePayment(tx, {
-        companyId,
-        sale,
-        amount: pay,
-        type: input.type,
-        methodId,
-      });
-      remaining = remaining.minus(pay);
+      const alloc = Prisma.Decimal.min(remaining, debt);
+
+      // Shu sotuv uchun hovuzlardan chunklar yig'iladi
+      const saleChunks: DebtChunk[] = [];
+      let need = alloc;
+      while (need.greaterThan(0) && poolIdx < pools.length) {
+        const pool = pools[poolIdx];
+        const take = Prisma.Decimal.min(pool.amount, need);
+        if (take.greaterThan(0)) {
+          saleChunks.push({ type: pool.type, amount: take, methodId: pool.methodId });
+          pool.amount = pool.amount.minus(take);
+          need = need.minus(take);
+        }
+        if (pool.amount.lessThanOrEqualTo(0)) poolIdx += 1;
+      }
+
+      const created = await applySalePayment(tx, { companyId, sale, chunks: saleChunks });
+      remaining = remaining.minus(alloc);
       results.push({
         sale: sale.id,
-        amount: pay.toFixed(2),
-        payment_id: payment.id,
-        remaining_debt: debt.minus(pay).toFixed(2),
+        amount: alloc.toFixed(2),
+        payment_id: created[0].id,
+        remaining_debt: debt.minus(alloc).toFixed(2),
       });
     }
 

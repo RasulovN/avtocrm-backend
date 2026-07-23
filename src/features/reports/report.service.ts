@@ -259,6 +259,145 @@ export async function getPaymentStructure(
   return result;
 }
 
+// ── PaymentMethodFlows — kartalar kesimida kirim-chiqim ──
+// Har to'lov usuli (Naqd, Uzcard, Humo, Payme, ...) bo'yicha davr ichida:
+//   KIRIM:  sotuv to'lovlari + qarz to'lovlari (Payment, is_refund=false)
+//   CHIQIM: xarid (kirim) to'lovlari (StockEntryPayment) +
+//           ta'minotchi qarzi to'lovlari (SupplierTransaction type='pay') +
+//           mijozga qaytarilgan pul (Payment, is_refund=true)
+//   NET = kirim - chiqim.
+// Sana filtri har yozuvning o'z createdAt'i bo'yicha (to'lov qachon bo'lgan bo'lsa).
+export interface PaymentMethodFlowRow {
+  method: string;
+  income_sales: number;
+  income_total: number;
+  expense_purchases: number;
+  expense_supplier: number;
+  expense_refunds: number;
+  expense_total: number;
+  net: number;
+}
+
+export async function getPaymentMethodFlows(
+  dateFrom: Date,
+  dateTo: Date,
+  storeIds: number[],
+): Promise<PaymentMethodFlowRow[]> {
+  const createdAt = { gte: dateFrom, lte: dateTo };
+
+  const [salesIn, refunds, purchasePays, supplierPays] = await Promise.all([
+    // Sotuvdan tushgan pul (sotuv paytida + keyingi qarz to'lovlari)
+    prisma.payment.groupBy({
+      by: ['type', 'methodId'],
+      where: { createdAt, isRefund: false, sale: { storeId: { in: storeIds } } },
+      _sum: { amount: true },
+    }),
+    // Mijozga qaytarilgan pul (sotuv qaytarish oqimi)
+    prisma.payment.groupBy({
+      by: ['type', 'methodId'],
+      where: { createdAt, isRefund: true, sale: { storeId: { in: storeIds } } },
+      _sum: { amount: true },
+    }),
+    // Xarid (kirim) paytida to'langan pul — split qatorlari
+    prisma.stockEntryPayment.groupBy({
+      by: ['type', 'bankCardId'],
+      where: { createdAt, entry: { storeId: { in: storeIds } } },
+      _sum: { amount: true },
+    }),
+    // Ta'minotchi qarzi to'lovlari
+    prisma.supplierTransaction.groupBy({
+      by: ['paymentMethod', 'bankCardId'],
+      where: { createdAt, type: 'pay', entry: { storeId: { in: storeIds } } },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  // Barcha ishlatilgan kanal nomlari bitta so'rovda
+  const methodIds = new Set<number>();
+  for (const r of salesIn) if (r.methodId !== null) methodIds.add(r.methodId);
+  for (const r of refunds) if (r.methodId !== null) methodIds.add(r.methodId);
+  for (const r of purchasePays) if (r.bankCardId !== null) methodIds.add(r.bankCardId);
+  for (const r of supplierPays) if (r.bankCardId !== null) methodIds.add(r.bankCardId);
+  const methods = methodIds.size
+    ? await prisma.paymentMethod.findMany({
+        where: { id: { in: [...methodIds] } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const methodNames = new Map(methods.map((m) => [m.id, m.name]));
+
+  // Label: naqd hammasi "Naqd"; karta — kanal nomi (nomsiz eski yozuvlar "Karta")
+  const label = (type: string, cardId: number | null): string => {
+    if (type !== 'card') return PAYMENT_METHOD_LABELS.cash;
+    if (cardId === null) return PAYMENT_METHOD_LABELS.card;
+    return methodNames.get(cardId) ?? PAYMENT_METHOD_LABELS.card;
+  };
+
+  interface FlowAcc {
+    income_sales: Prisma.Decimal;
+    expense_purchases: Prisma.Decimal;
+    expense_supplier: Prisma.Decimal;
+    expense_refunds: Prisma.Decimal;
+  }
+  const buckets = new Map<string, FlowAcc>();
+  const bucket = (key: string): FlowAcc => {
+    let acc = buckets.get(key);
+    if (!acc) {
+      acc = {
+        income_sales: D0,
+        expense_purchases: D0,
+        expense_supplier: D0,
+        expense_refunds: D0,
+      };
+      buckets.set(key, acc);
+    }
+    return acc;
+  };
+
+  for (const r of salesIn) {
+    if (r.type === 'debt') continue; // eski ma'lumotlarda uchrashi mumkin — pul harakati emas
+    const acc = bucket(label(r.type, r.methodId));
+    acc.income_sales = acc.income_sales.add(dec(r._sum.amount));
+  }
+  for (const r of refunds) {
+    const acc = bucket(label(r.type, r.methodId));
+    acc.expense_refunds = acc.expense_refunds.add(dec(r._sum.amount));
+  }
+  for (const r of purchasePays) {
+    const acc = bucket(label(r.type, r.bankCardId));
+    acc.expense_purchases = acc.expense_purchases.add(dec(r._sum.amount));
+  }
+  for (const r of supplierPays) {
+    // Eski yozuvlarda paymentMethod bo'sh ('') — naqd deb hisoblanadi
+    const type = r.paymentMethod === 'card' ? 'card' : 'cash';
+    const acc = bucket(label(type, r.bankCardId));
+    acc.expense_supplier = acc.expense_supplier.add(dec(r._sum.amount));
+  }
+
+  const rows: PaymentMethodFlowRow[] = [...buckets.entries()].map(([method, acc]) => {
+    const incomeTotal = acc.income_sales;
+    const expenseTotal = acc.expense_purchases.add(acc.expense_supplier).add(acc.expense_refunds);
+    return {
+      method,
+      income_sales: num(acc.income_sales),
+      income_total: num(incomeTotal),
+      expense_purchases: num(acc.expense_purchases),
+      expense_supplier: num(acc.expense_supplier),
+      expense_refunds: num(acc.expense_refunds),
+      expense_total: num(expenseTotal),
+      net: num(incomeTotal.sub(expenseTotal)),
+    };
+  });
+
+  // "Naqd" birinchi, qolganlari aylanma (kirim+chiqim) bo'yicha kamayish tartibida
+  rows.sort((a, b) => {
+    if (a.method === PAYMENT_METHOD_LABELS.cash) return -1;
+    if (b.method === PAYMENT_METHOD_LABELS.cash) return 1;
+    return b.income_total + b.expense_total - (a.income_total + a.expense_total);
+  });
+  return rows;
+}
+
 // ── DebtService.customer_debts ──
 // CustomerDebt (sale.storeId filtri) -> customer bo'yicha inc(type='i') - dec(type='d')
 // faqat musbat qarzlar.
@@ -345,6 +484,7 @@ export interface ReportData {
   categoryStatistics: Awaited<ReturnType<typeof getCategoryStatistics>>;
   topSellingProducts: Awaited<ReturnType<typeof getTopSellingProducts>>;
   paymentStructure: Awaited<ReturnType<typeof getPaymentStructure>>;
+  paymentMethodFlows: PaymentMethodFlowRow[];
   debts: {
     customerDebts: Awaited<ReturnType<typeof getCustomerDebts>>;
     supplierDebts: Awaited<ReturnType<typeof getSupplierDebts>>;
@@ -370,6 +510,7 @@ export async function getReport(
     categoryStatistics,
     topSellingProducts,
     paymentStructure,
+    paymentMethodFlows,
     customerDebts,
     supplierDebts,
   ] = await Promise.all([
@@ -378,6 +519,7 @@ export async function getReport(
     getCategoryStatistics(dateFrom, dateTo, storeIds),
     getTopSellingProducts(dateFrom, dateTo, storeIds),
     getPaymentStructure(dateFrom, dateTo, storeIds),
+    getPaymentMethodFlows(dateFrom, dateTo, storeIds),
     getCustomerDebts(storeIds),
     getSupplierDebts(storeIds),
   ]);
@@ -388,6 +530,7 @@ export async function getReport(
     categoryStatistics,
     topSellingProducts,
     paymentStructure,
+    paymentMethodFlows,
     debts: { customerDebts, supplierDebts },
   };
 }

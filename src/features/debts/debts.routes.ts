@@ -25,11 +25,12 @@ export async function debtsRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const companyId = getCompanyId(req);
       const data = payDebtSchema.parse(req.body);
-      const payment = await payDebt(companyId, data);
+      const result = await payDebt(companyId, data);
       return reply.status(201).send({
         message: 'Debt paid successfully',
-        payment_id: payment.id,
-        amount: payment.amount.toFixed(2),
+        payment_id: result.payments[0].id,
+        payment_ids: result.payments.map((p) => p.id),
+        amount: result.total.toFixed(2),
       });
     },
   );

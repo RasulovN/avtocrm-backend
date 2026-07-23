@@ -171,17 +171,64 @@ export const stockEntryCreateSchema = z
 // Supplier payment (transaction)
 // ─────────────────────────────────────────────
 
+// Split to'lov qatori — kirimdagi payments[] bilan bir xil shakl
+const supplierPaymentSplitSchema = z
+  .object({
+    type: z.enum(['cash', 'card']),
+    amount: decimalLike,
+    bank_card: z.number().int().nullable().optional().default(null),
+  })
+  .superRefine((data, ctx) => {
+    if (Number(data.amount) <= 0) {
+      ctx.addIssue({ code: 'custom', message: "To'lov miqdori noldan katta bo'lishi kerak", path: ['amount'] });
+    }
+    if (data.type === 'card' && !data.bank_card) {
+      ctx.addIssue({ code: 'custom', message: "Karta to'lovi uchun to'lov turini (kartani) tanlang", path: ['bank_card'] });
+    }
+    if (data.type === 'cash' && data.bank_card) {
+      ctx.addIssue({ code: 'custom', message: "Naqd to'lovda bank_card yuborilmasligi kerak", path: ['bank_card'] });
+    }
+  });
+
 export const supplierPaymentSchema = z
   .object({
     supplier: z.number().int(),
     entry: z.number().int(),
-    amount: decimalLike,
+    // Split rejimda amount ixtiyoriy — payments yig'indisidan olinadi
+    amount: decimalLike.optional(),
     note: z.string().optional(),
-    // To'lov usuli: naqd (default) yoki karta; karta bo'lsa bank_card majburiy
+    // Yangi klientlar: bir nechta usul bilan to'lash — har usul alohida qator
+    payments: z.array(supplierPaymentSplitSchema).optional().default([]),
+    // Eski (bitta usulli) rejim: naqd (default) yoki karta; karta bo'lsa bank_card majburiy
     payment_type: z.enum(['cash', 'card']).optional().default('cash'),
     bank_card: z.number().int().nullable().optional().default(null),
   })
   .superRefine((data, ctx) => {
+    if (data.payments.length > 0) {
+      const cardIds = data.payments
+        .filter((p) => p.type === 'card' && p.bank_card)
+        .map((p) => p.bank_card as number);
+      if (new Set(cardIds).size !== cardIds.length) {
+        ctx.addIssue({ code: 'custom', message: 'Bitta karta bir necha marta tanlangan', path: ['payments'] });
+      }
+      if (data.payments.filter((p) => p.type === 'cash').length > 1) {
+        ctx.addIssue({ code: 'custom', message: "Naqd to'lov faqat bitta qator bo'lishi mumkin", path: ['payments'] });
+      }
+      if (data.amount !== undefined) {
+        const total = data.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+        if (Math.abs(total - Number(data.amount)) > 0.005) {
+          ctx.addIssue({
+            code: 'custom',
+            message: "amount split to'lovlar yig'indisiga teng bo'lishi kerak",
+            path: ['amount'],
+          });
+        }
+      }
+      return;
+    }
+    if (data.amount === undefined) {
+      ctx.addIssue({ code: 'custom', message: "To'lov miqdorini kiriting", path: ['amount'] });
+    }
     if (data.payment_type === 'card' && !data.bank_card) {
       ctx.addIssue({
         code: 'custom',

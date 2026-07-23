@@ -20,6 +20,7 @@ import {
   serializeSupplierDetail,
   listEntryTransactions,
   makePayment,
+  makePayments,
   getSupplierStats,
   listSupplierPayments,
   listSupplierProducts,
@@ -410,21 +411,36 @@ export async function contractRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const companyId = getCompanyId(req);
       const body = supplierPaymentSchema.parse(req.body);
-      const payment = await makePayment({
-        companyId,
-        supplierId: body.supplier,
-        entryId: body.entry,
-        amount: body.amount,
-        note: body.note,
-        paymentType: body.payment_type,
-        bankCardId: body.bank_card,
-        userFullName: req.authUser!.fullName,
-      });
+      // Split rejim: payments[] berilsa har usul alohida tranzaksiya bo'lib yoziladi;
+      // eski rejim: amount + payment_type + bank_card — bitta qator.
+      const transactions = body.payments.length
+        ? await makePayments({
+            companyId,
+            supplierId: body.supplier,
+            entryId: body.entry,
+            payments: body.payments,
+            note: body.note,
+            userFullName: req.authUser!.fullName,
+          })
+        : [
+            await makePayment({
+              companyId,
+              supplierId: body.supplier,
+              entryId: body.entry,
+              amount: body.amount!,
+              note: body.note,
+              paymentType: body.payment_type,
+              bankCardId: body.bank_card,
+              userFullName: req.authUser!.fullName,
+            }),
+          ];
+      const total = transactions.reduce((sum, t) => sum + Number(t.amount), 0);
       return reply.status(201).send({
         status: 'success',
         message: "To'lov muvaffaqiyatli qabul qilindi",
-        transaction_id: payment.id,
-        amount: Number(payment.amount).toFixed(2),
+        transaction_id: transactions[0].id,
+        transaction_ids: transactions.map((t) => t.id),
+        amount: total.toFixed(2),
       });
     },
   );

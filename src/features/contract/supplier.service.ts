@@ -1,4 +1,5 @@
-import type { Prisma, Supplier, SupplierTransaction } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import type { Supplier, SupplierTransaction } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { NotFound, ValidationError } from '../../common/errors.js';
 import { checkValidPhone } from '../../common/validators.js';
@@ -339,22 +340,23 @@ export async function listEntryTransactions(companyId: number, entryId: number) 
   return transactions.map(serializeSupplierTransaction);
 }
 
-export async function makePayment(opts: {
+// Django SupplierPaymentService.make_payments ekvivalenti:
+// bitta so'rovda bir nechta usul bilan qarz to'lash (split) — har usul alohida
+// SupplierTransaction (pay) qatori bo'lib yoziladi. Qoldiq qarz tekshiruvi
+// entry qulfi ostida jami summa bo'yicha bajariladi.
+export async function makePayments(opts: {
   companyId: number;
   supplierId: number;
   entryId: number;
-  amount: string;
+  payments: Array<{ type: 'cash' | 'card'; amount: string; bank_card?: number | null }>;
   note?: string;
-  paymentType?: 'cash' | 'card';
-  bankCardId?: number | null;
   userFullName: string | null;
-}): Promise<SupplierTransaction> {
-  // SupplierPaymentSerializer relation + validation:
-  //   supplier active bo'lishi kerak; entry mavjud; entry.supplier == supplier;
-  //   amount > 0. Barchasi tenant (companyId) doirasida.
-  if (Number(opts.amount) <= 0) {
-    throw new ValidationError({ amount: ["To'lov miqdori noldan katta bo'lishi kerak."] });
+}): Promise<SupplierTransaction[]> {
+  const rows = opts.payments.filter((p) => Number(p.amount) > 0);
+  if (rows.length === 0) {
+    throw new ValidationError({ payments: ["To'lov qatorlari bo'sh"] });
   }
+  const total = rows.reduce((sum, p) => sum + Number(p.amount), 0);
 
   const supplier = await prisma.supplier.findFirst({
     where: { id: opts.supplierId, companyId: opts.companyId, isActive: true },
@@ -376,39 +378,117 @@ export async function makePayment(opts: {
     throw new ValidationError({ detail: 'Entry supplierga tegishli emas' });
   }
 
-  const paymentType = opts.paymentType ?? 'cash';
-  let bankCardId: number | null = null;
-  if (paymentType === 'card') {
-    // Karta to'lovi — faol PaymentMethod (global katalog) tanlangan bo'lishi shart
-    const card = opts.bankCardId
-      ? await prisma.paymentMethod.findFirst({
-          where: { id: opts.bankCardId, isActive: true },
-          select: { id: true },
-        })
-      : null;
-    if (!card) {
-      throw new ValidationError({ bank_card: ["Karta to'lovi uchun to'lov turini (kartani) tanlang"] });
+  // Karta qatorlari — faol va kirim uchun ruxsat etilgan (scope purchase/both)
+  // PaymentMethod bo'lishi shart
+  const cardIds = [
+    ...new Set(
+      rows.filter((p) => p.type === 'card' && p.bank_card).map((p) => p.bank_card as number),
+    ),
+  ];
+  if (cardIds.length > 0) {
+    const found = await prisma.paymentMethod.findMany({
+      where: { id: { in: cardIds }, isActive: true, scope: { in: ['purchase', 'both'] } },
+      select: { id: true },
+    });
+    const foundIds = new Set(found.map((c) => c.id));
+    for (const id of cardIds) {
+      if (!foundIds.has(id)) {
+        throw new ValidationError({ bank_card: ["Karta to'lovi uchun to'lov turini (kartani) tanlang"] });
+      }
     }
-    bankCardId = card.id;
   }
 
-  // make_payment — atomik
-  return prisma.$transaction((tx) =>
-    tx.supplierTransaction.create({
-      data: {
-        companyId: opts.companyId,
-        supplierId: opts.supplierId,
-        entryId: opts.entryId,
-        amount: opts.amount,
-        type: 'pay',
-        paymentMethod: paymentType,
-        bankCardId,
-        note:
-          opts.note ||
-          `Taminotchiga to'lov amalga oshirildi. Mas'ul: ${opts.userFullName ?? ''}`,
-      },
-    }),
-  );
+  return prisma.$transaction(async (tx) => {
+    // 🔴 LOCK ENTRY — bir vaqtda ikkita to'lov qoldiqdan oshib ketmasligi uchun
+    // (tekshiruv va yozish bitta tranzaksiyada, Django select_for_update kabi)
+    await tx.$queryRaw(
+      Prisma.sql`SELECT id FROM stock_entry WHERE id = ${opts.entryId} FOR UPDATE`,
+    );
+
+    // Qoldiq qarz: kirim (in) - to'langan (pay)
+    const sums = await tx.supplierTransaction.groupBy({
+      by: ['type'],
+      where: { entryId: opts.entryId },
+      _sum: { amount: true },
+    });
+    let totalIn = 0;
+    let totalPaid = 0;
+    for (const g of sums) {
+      const amount = Number(g._sum.amount ?? 0);
+      if (g.type === 'in') totalIn = amount;
+      else if (g.type === 'pay') totalPaid = amount;
+    }
+    const remaining = totalIn - totalPaid;
+    if (remaining <= 0) {
+      throw new ValidationError({ amount: ["Bu xarid bo'yicha qarz yo'q"] });
+    }
+    if (total > remaining + 0.005) {
+      throw new ValidationError({
+        amount: [`To'lov qoldiq qarzdan oshib ketdi. Qoldiq qarz: ${remaining.toFixed(2)}`],
+      });
+    }
+
+    const bankCardNames = new Map<number, string>();
+    if (cardIds.length > 0) {
+      const cards = await tx.paymentMethod.findMany({
+        where: { id: { in: cardIds } },
+        select: { id: true, name: true },
+      });
+      for (const c of cards) bankCardNames.set(c.id, c.name);
+    }
+
+    const transactions: SupplierTransaction[] = [];
+    for (const p of rows) {
+      const bankCardId = p.type === 'card' ? (p.bank_card ?? null) : null;
+      // To'lov usuli izoh uchun: "naqd" yoki karta nomi (Uzcard/Humo/...)
+      const methodLabel = bankCardId ? (bankCardNames.get(bankCardId) ?? 'karta') : 'naqd';
+      transactions.push(
+        await tx.supplierTransaction.create({
+          data: {
+            companyId: opts.companyId,
+            supplierId: opts.supplierId,
+            entryId: opts.entryId,
+            amount: Number(p.amount).toFixed(2),
+            type: 'pay',
+            paymentMethod: p.type,
+            bankCardId,
+            note:
+              opts.note ||
+              `Taminotchiga to'lov (${methodLabel}). Mas'ul: ${opts.userFullName ?? ''}`,
+          },
+        }),
+      );
+    }
+    return transactions;
+  });
+}
+
+// Eski (bitta usulli) interfeys — ichkarida split servisga o'tkazadi
+export async function makePayment(opts: {
+  companyId: number;
+  supplierId: number;
+  entryId: number;
+  amount: string;
+  note?: string;
+  paymentType?: 'cash' | 'card';
+  bankCardId?: number | null;
+  userFullName: string | null;
+}): Promise<SupplierTransaction> {
+  const paymentType = opts.paymentType ?? 'cash';
+  if (paymentType === 'card' && !opts.bankCardId) {
+    throw new ValidationError({ bank_card: ["Karta to'lovi uchun to'lov turini (kartani) tanlang"] });
+  }
+  const transactions = await makePayments({
+    companyId: opts.companyId,
+    supplierId: opts.supplierId,
+    entryId: opts.entryId,
+    payments: [
+      { type: paymentType, amount: opts.amount, bank_card: paymentType === 'card' ? opts.bankCardId : null },
+    ],
+    note: opts.note,
+    userFullName: opts.userFullName,
+  });
+  return transactions[0];
 }
 
 // ─────────────────────────────────────────────
